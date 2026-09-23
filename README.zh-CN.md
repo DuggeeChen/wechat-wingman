@@ -164,7 +164,7 @@ pip install -r requirements.txt
 - **日志不含聊天正文、不含联系人姓名** —— 只记启动、热键注册、风格增删和模型报错。连消息条数、耗时、风格名都不记。
 - 无遥测、无统计、无第三方调用。
 
-详见 [docs/PRIVACY.md](docs/PRIVACY.md)
+详见 [docs/PRIVACY.md](docs/PRIVACY.md) · 安全策略：[SECURITY.md](SECURITY.md)
 
 > 本工具用于帮你草拟自己的回复。请负责任地使用，并遵守所用平台的条款。
 

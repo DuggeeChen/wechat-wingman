@@ -33,7 +33,7 @@ This project takes the boring-but-safe route, and that's the point:
 | Sends messages | Automatically | **Never** — you copy & paste |
 | Reads chat history | Scrapes the local DB | **Never** — only what's on screen right now |
 | Uploads your chats | Often a remote server | **Only** to the API you configure, and only the current screen |
-| Keeps logs of chats | Usually yes | **No** — logs record counts and timing, not content or names |
+| Keeps logs of chats | Usually yes | **No** — logs record lifecycle events only, never content or names |
 | Model choice | Locked to one vendor | **Any** OpenAI-compatible vision API |
 
 If you want your replies drafted *for* you — but still want to stay in control and keep your chats yours — this is the tool.
@@ -164,7 +164,7 @@ Works with any provider that speaks the OpenAI chat-completions protocol with im
 - **Logs contain no chat content and no contact names** — they record only app lifecycle events (startup, hotkey registration, persona edits) and model errors. Not even message counts, timing, or persona names.
 - No telemetry, no analytics, no third-party calls.
 
-Full details: [docs/PRIVACY.md](docs/PRIVACY.md)
+Full details: [docs/PRIVACY.md](docs/PRIVACY.md) · Security policy: [SECURITY.md](SECURITY.md)
 
 > This tool is for drafting your own replies. Use it responsibly and respect the terms of any platform you use it with.
 
