@@ -22,6 +22,8 @@ except Exception:
 
 # 这些文件属于「本机私有」，永远不该被提交
 FORBIDDEN_NAMES = {"config.json", ".env", "ui_state.json", "debug_last.png"}
+# 这些目录属于「本机私有」：人物画像含明文聊天观察与原话引用，误提交等于泄露一整本
+FORBIDDEN_DIRS = {"profiles"}
 FORBIDDEN_EXT = {".log", ".log.1"}
 FORBIDDEN_PREFIX = ("wx_helper.log",)
 
@@ -53,12 +55,21 @@ def tracked_files():
     return files
 
 
+def in_forbidden_dir(path):
+    """路径是否落在私有目录里（含任意层级）。"""
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p != "."]
+    return any(p in FORBIDDEN_DIRS for p in parts[:-1])
+
+
 def main():
     problems = []
     files = tracked_files()
     for f in files:
         base = os.path.basename(f)
         ext = os.path.splitext(base)[1].lower()
+        if in_forbidden_dir(f):
+            problems.append("%s  ->  私有目录不该入库（.gitignore 漏了？）" % f)
+            continue
         if base in FORBIDDEN_NAMES or ext in FORBIDDEN_EXT or base.startswith(FORBIDDEN_PREFIX):
             problems.append("%s  ->  私人文件不该入库（.gitignore 漏了？）" % f)
             continue

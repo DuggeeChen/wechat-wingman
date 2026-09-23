@@ -26,10 +26,15 @@ jobs:
         run: python -m pip install --upgrade pip pillow requests
 
       - name: Byte-compile all modules
-        run: python -m py_compile wx_helper.py wx_ui.py
+        run: python -m py_compile wx_helper.py wx_ui.py profile.py profile_ui.py ui_theme.py
 
       - name: Import check
-        run: python -c "import wx_helper, wx_ui; print('import ok')"
+        run: python -c "import wx_helper, wx_ui, profile, profile_ui, ui_theme; print('import ok')"
+
+      - name: Regression tests (no network, no real profile dir)
+        run: |
+          python scripts/test_profile.py
+          python scripts/test_ui.py
 
       - name: Validate the shipped config template
         run: |

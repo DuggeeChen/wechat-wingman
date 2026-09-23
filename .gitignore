@@ -6,6 +6,9 @@ config.json
 ui_state.json
 debug_last.png
 
+# 人物画像：明文聊天观察 + 原话引用，最私密的东西，永不入库
+profiles/
+
 # 日志（含旧版本可能写过的联系人名）
 *.log
 *.log.1

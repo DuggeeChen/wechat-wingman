@@ -37,8 +37,8 @@ This project takes the boring-but-safe route, and that's the point:
 |---|---|---|
 | Touches the WeChat client | Hooks / injects the process | **Never** — reads the screen only |
 | Sends messages | Automatically | **Never** — you copy & paste |
-| Reads chat history | Scrapes the local DB | **Never** — only what's on screen right now |
-| Uploads your chats | Often a remote server | **Only** to the API you configure, and only the current screen |
+| Reads chat history | Scrapes the local DB | **Never from WeChat** — only what's on screen, plus chat text *you* paste into the profile window |
+| Uploads your chats | Often a remote server | **Only** to the API you configure — the current screen, and any chat text you paste |
 | Keeps logs of chats | Usually yes | **No** — logs record lifecycle events only, never content or names |
 | Model choice | Locked to one vendor | **Any** OpenAI-compatible vision API |
 
@@ -70,13 +70,33 @@ If you want your replies drafted *for* you — but still want to stay in control
                                                   │ click to copy
                                                   ▼
                                         you paste it yourself
+
+  profile_ui.py (separate window) ── you paste chat text ──► profile.py ──► profiles/<name>.json
+                                                                    │
+                                                                    └── background block ──► the text-only pass above
 ```
 
 1. **Trigger** — press `Ctrl+Alt+Q` (or the "读取当前聊天" button). Nothing happens until *you* ask.
 2. **Capture** — it finds the WeChat window, crops the sidebar away using the real divider line, and keeps the full height so no latest message is missed.
 3. **Understand** — the screenshot goes to your model, which returns the **contact**, the **recent messages**, and **3 reply candidates**, each tagged with a *why* (the strategy behind it).
-4. **Match tone** — if the recognized contact has a bound persona (e.g. your boss → 上级), a lightweight text-only second call regenerates the candidates in that tone. Your contact list is never sent to the model.
-5. **Choose** — click a candidate to copy the text (without the strategy tag), refine it with **edit / shorter / more natural / rephrase**, or ask for **a fresh batch**. Then paste it yourself.
+4. **Match tone** — if the recognized contact has a bound persona (e.g. your boss → 上级) *or* a usable profile, a lightweight text-only second call regenerates the candidates. Your contact list is never sent to the model.
+5. **Recall** — if you have built a **person profile** for this contact, its background block rides along with that text-only call, so the reply can account for what you already know about them (what they do, what they care about, what they've said before).
+6. **Choose** — click a candidate to copy the text (without the strategy tag), refine it with **edit / shorter / more natural / rephrase**, or ask for **a fresh batch**. Then paste it yourself.
+
+---
+
+## Person profiles — the more you use it, the better it knows them
+
+The reply flow only ever sees the current screen, so on its own it can't know that 周总 is in the building-materials business, or that he hates being asked two questions at once. The profile feature is how that context gets in — and it is **deliberately manual**.
+
+Open the profile window, pick a contact, and **paste 50–100 messages of your chat with them as text** (copy it out of WeChat yourself; the app never touches the database). Then:
+
+- It splits the paste by speaker **locally and deterministically**, so it never has to guess who said what.
+- The model extracts observations — each one must come with a **verbatim quote from the paste**. A quote that can't be found in the text is thrown away, so an invented "fact" can't get in.
+- You review the list and can reject any entry (「不准」), with one-click undo of the last import (「撤销上次导入」).
+- Next time you read that chat, the profile rides along in the text-only pass and the candidates are generated with it in mind.
+
+**The profile is yours and it stays local.** It lives in `profiles/` (git-ignored), is plain JSON you can read and delete, and is never sent for any *other* contact. It reaches the model in exactly two situations: when you explicitly build or update it (the paste goes out in full), and on a read of *that* contact's chat (only a ≤600-character digest, quotes stripped). See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact accounting.
 
 ---
 
@@ -85,7 +105,8 @@ If you want your replies drafted *for* you — but still want to stay in control
 - 🖥️ **Screen-read only** — no injection, no hooks, no DB scraping. WeChat stays untouched.
 - ✋ **On-demand** — it analyzes only when you press the hotkey or click the button.
 - 👥 **Multi-chat aware** — recognizes who you're talking to and switches tone automatically as you switch chats.
-- 🎭 **Per-person tone** — a `contact_personas` map (e.g. `"王总": "上级"`) plus editable personas, add/delete freely in the UI.
+- 🎭 **Per-person tone** — a `contact_personas` map (e.g. `"周总": "上级"`) plus editable personas, add/delete freely in the UI.
+- 🧠 **Person profiles** — paste a chat, get a per-contact memory of who they are and what they care about, with every claim backed by a quotable line. Stored locally, updated as you add more. See [below](#person-profiles--the-more-you-use-it-the-better-it-knows-them).
 - 🏷️ **Why-tags** — every candidate explains its strategy so you pick *deliberately*, not randomly.
 - 🔁 **Refine in place** — edit, shorten, naturalize, rephrase, or regenerate a whole batch without re-sending the image.
 - 🛡️ **Injection-aware** — chat content is treated as untrusted data and can never override instructions.
@@ -166,9 +187,12 @@ Works with any provider that speaks the OpenAI chat-completions protocol with im
 
 ## Privacy
 
-- Your chats are sent **only** to the API you configure, and **only the screen you're looking at** when you trigger it.
+- Your chats are sent **only** to the API you configure. The reply flow sends **the screen you're looking at** when you trigger it; the profile flow sends **the chat text you paste in**.
+- **Person profiles stay on your machine** — `profiles/` is git-ignored plain JSON, never sent for any other contact, and deletable by deleting the file.
 - **Logs contain no chat content and no contact names** — they record only app lifecycle events (startup, hotkey registration, persona edits) and model errors. Not even message counts, timing, or persona names.
 - No telemetry, no analytics, no third-party calls.
+
+Two things worth knowing without reading the full page: the pasted chat text is uploaded **verbatim and in full** (a regex scrubber removes ID/card/phone numbers, emails and `密码：xxx`, and nothing else), and if you set `fallback_models`, a failed first attempt is retried with the same payload — **screenshot included**.
 
 Full details: [docs/PRIVACY.md](docs/PRIVACY.md) · Security policy: [SECURITY.md](SECURITY.md)
 
@@ -182,15 +206,21 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md) · Security policy: [SECURITY.m
 wechat-wingman/
 ├── wx_helper.py            # core: hotkey, capture, crop, model call, config
 ├── wx_ui.py                # Tkinter card UI: copy, refine, tone, batch
+├── profile.py              # person profiles: speaker split, extract, merge, store
+├── profile_ui.py           # profile window: paste, review, reject, merge
+├── ui_theme.py             # shared card/panel drawing for both windows
 ├── launch.bat / launch.vbs # launchers (vbs = silent, no console)
 ├── config.example.json     # template → copied to config.json on first run
 ├── requirements.txt
+├── profiles/               # YOUR profiles (git-ignored, never committed)
 ├── docs/
 │   ├── ARCHITECTURE.md     # data flow & design decisions
 │   ├── PRIVACY.md          # exactly what is sent / stored
 │   └── FAQ.md
 ├── scripts/
-│   └── check_no_secrets.py # pre-commit secret guard (runs in CI)
+│   ├── check_no_secrets.py # pre-commit secret guard (runs in CI)
+│   ├── test_profile.py     # profile-store regression tests (no network)
+│   └── test_ui.py          # UI regression tests (no network)
 └── .github/workflows/ci.yml
 ```
 
