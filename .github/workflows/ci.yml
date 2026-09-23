@@ -8,8 +8,12 @@ on:
 
 jobs:
   check:
-    name: Syntax · import · secret guard
+    name: Syntax · import · config · secret guard · selftest
     runs-on: windows-latest
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +38,9 @@ jobs:
       - name: Secret / private-file guard
         run: python scripts/check_no_secrets.py
 
-      - name: Selftest runs without a WeChat window
+      - name: Selftest (no screenshot, no network)
         run: python wx_helper.py --selftest
-        continue-on-error: true
+
+      - name: First-run bootstrap creates config.json
+        run: |
+          python -c "import os,sys; ok=os.path.exists('config.json'); print('config.json bootstrapped' if ok else 'MISSING'); sys.exit(0 if ok else 1)"

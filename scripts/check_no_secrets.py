@@ -13,6 +13,13 @@ import re
 import subprocess
 import sys
 
+# Windows 上 stdout 可能是 cp1252（GitHub Actions 的 runner 就是），打印中文会直接
+# 抛 UnicodeEncodeError。统一按 UTF-8 输出，本地和 CI 表现一致。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # 这些文件属于「本机私有」，永远不该被提交
 FORBIDDEN_NAMES = {"config.json", ".env", "ui_state.json", "debug_last.png"}
 FORBIDDEN_EXT = {".log", ".log.1"}
