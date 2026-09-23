@@ -161,7 +161,7 @@ Works with any provider that speaks the OpenAI chat-completions protocol with im
 ## Privacy
 
 - Your chats are sent **only** to the API you configure, and **only the screen you're looking at** when you trigger it.
-- **Logs contain no chat content and no contact names** — just timestamps, message counts, timing, model, and persona.
+- **Logs contain no chat content and no contact names** — they record only app lifecycle events (startup, hotkey registration, persona edits) and model errors. Not even message counts, timing, or persona names.
 - No telemetry, no analytics, no third-party calls.
 
 Full details: [docs/PRIVACY.md](docs/PRIVACY.md)

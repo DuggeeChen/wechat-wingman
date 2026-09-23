@@ -28,7 +28,7 @@ The image is sent **at most once per trigger**. Every follow-up is text-only.
 | `config.json` | Yes | Your personas and contact bindings. **Git-ignored** — this is your private file. |
 | `.env` | Yes | Your API key. **Git-ignored.** |
 | `ui_state.json` | Yes | Window size / position / topmost. **Git-ignored.** |
-| `wx_helper.log` | Yes, rotated at 1 MB | Timestamps, message counts, timing, model, persona. **No chat content, no names, no response bodies.** |
+| `wx_helper.log` | Yes, rotated at 1 MB | App lifecycle only — startup, hotkey registration, persona add/rename/delete — plus model errors. **No chat content, no contact names, no persona names, no message counts, no timing, no response bodies.** |
 | `debug_last.png` | Only if `save_debug: true` | The last screenshot. **Off by default; git-ignored.** Delete it if you turn it on. |
 | Read messages / candidates | In memory only | Cleared when the app exits. |
 
