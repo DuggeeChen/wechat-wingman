@@ -108,6 +108,12 @@ class ReplyApp:
         if testing:
             self.root.withdraw()
         self.root.title("微信军师")
+        icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "wingman.ico")
+        if os.path.exists(icon):
+            try:
+                self.root.iconbitmap(default=icon)
+            except tk.TclError:
+                pass  # non-Windows, or an unreadable .ico; purely cosmetic
         self.root.configure(bg=BG)
         self.root.minsize(480, 620)
         self.q = queue.Queue()

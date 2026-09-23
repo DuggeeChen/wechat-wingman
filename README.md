@@ -1,15 +1,21 @@
-# WeChat Wingman · 微信回复军师
+<p align="center">
+  <img src="assets/wingman.png" alt="WeChat Wingman" width="104">
+</p>
 
-> **Reads your screen. Suggests replies. Never touches WeChat. Never sends anything.**
+<h1 align="center">WeChat Wingman · 微信回复军师</h1>
 
-[![Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.python.org/downloads/)
-[![Python](https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
-[![Model-agnostic](https://img.shields.io/badge/model-any%20OpenAI%20compatible%20vision%20API-8A2BE2)](#-bring-your-own-model)
-[![Zero-injection](https://img.shields.io/badge/approach-screen--read%20only-00C7B7)](#-why-not-a-bot)
-[![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml)
+<p align="center"><b>Reads your screen. Suggests replies. Never touches WeChat. Never sends anything.</b></p>
 
-**English** · [中文](README.zh-CN.md)
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white" alt="Platform: Windows"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white" alt="Python 3.9+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="License: MIT"></a>
+  <a href="#-bring-your-own-model"><img src="https://img.shields.io/badge/model-any%20OpenAI%20compatible%20vision%20API-8A2BE2" alt="Model-agnostic"></a>
+  <a href="#-why-not-a-bot"><img src="https://img.shields.io/badge/approach-screen--read%20only-00C7B7" alt="Screen-read-only"></a>
+  <a href="https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml"><img src="https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
 WeChat Wingman watches the **screen** in front of you and drafts replies for the chat you are looking at — **on demand, on your own machine, with your own model.** Press a hotkey (or click a button), and it reads the current conversation, figures out who you are talking to, and offers a few reply candidates in a matching tone. You click one to copy it, then paste it yourself.
 

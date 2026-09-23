@@ -1,15 +1,21 @@
-# 微信回复军师 · WeChat Wingman
+<p align="center">
+  <img src="assets/wingman.png" alt="微信回复军师" width="104">
+</p>
 
-> **只读你的屏幕，给出回复建议。不碰微信本体，不替你发送任何消息。**
+<h1 align="center">微信回复军师 · WeChat Wingman</h1>
 
-[![Windows](https://img.shields.io/badge/平台-Windows-0078D6?logo=windows&logoColor=white)](https://www.python.org/downloads/)
-[![Python](https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/许可-MIT-2ea44f)](LICENSE)
-[![Model-agnostic](https://img.shields.io/badge/模型-任意%20OpenAI%20兼容视觉接口-8A2BE2)](#-自带模型)
-[![Zero-injection](https://img.shields.io/badge/方式-只读屏幕-00C7B7)](#-为什么不是机器人)
-[![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml)
+<p align="center"><b>只读你的屏幕，给出回复建议。不碰微信本体，不替你发送任何消息。</b></p>
 
-[English](README.md) · **中文**
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/平台-Windows-0078D6?logo=windows&logoColor=white" alt="平台：Windows"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white" alt="Python 3.9+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/许可-MIT-2ea44f" alt="许可：MIT"></a>
+  <a href="#-自带模型"><img src="https://img.shields.io/badge/模型-任意%20OpenAI%20兼容视觉接口-8A2BE2" alt="模型无关"></a>
+  <a href="#-为什么不是机器人"><img src="https://img.shields.io/badge/方式-只读屏幕-00C7B7" alt="只读屏幕"></a>
+  <a href="https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml"><img src="https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
+<p align="center"><a href="README.md">English</a> · <b>中文</b></p>
 
 微信回复军师盯着你面前的**屏幕**，为当前正在看的聊天草拟回复——**按需、在你本机、用你自己的模型。** 按一下热键（或点一下按钮），它读取当前对话、认出你在跟谁聊，用贴合的语气给出几条候选回复。你点一下复制，然后自己粘贴发送。
 
