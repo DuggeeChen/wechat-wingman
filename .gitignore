@@ -1,0 +1,27 @@
+# ===== 你的私人配置与运行痕迹（永不入库）=====
+config.json
+.env
+.env.*
+!.env.example
+ui_state.json
+debug_last.png
+
+# 日志（含旧版本可能写过的联系人名）
+*.log
+*.log.1
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

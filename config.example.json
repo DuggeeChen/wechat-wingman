@@ -1,0 +1,30 @@
+{
+  "_说明": "首次运行会自动复制成 config.json。这里全部是虚构数据，改成你自己的即可。",
+
+  "api_base": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "api_key_env": "WECHAT_WINGMAN_API_KEY",
+  "env_files": [".env"],
+  "fallback_models": [],
+
+  "hotkey": "ctrl+alt+q",
+  "candidates": 3,
+
+  "personas": {
+    "默认": "口语化、简短、像真人打的字，贴合上下文语气，不要客套废话，不要解释理由",
+    "商务": "简洁专业、留余地、不寒暄不废话，先把事说清楚，语气平和但不过分热络",
+    "亲密": "放松自然、带点情绪和玩笑，可以用语气词，像跟熟人随手打的字",
+    "上级": "尊重有分寸、先回应再表态、不抢话不追问，语气稳，避免绝对化的承诺",
+    "客套": "礼貌周到、给对方留台阶、多用缓冲词，事情说清楚但态度温和"
+  },
+  "default_persona": "默认",
+
+  "contact_personas": {
+    "李小明": "亲密",
+    "王总": "上级"
+  },
+
+  "always_on_top": true,
+  "save_debug": false,
+  "capture_sidebar_max_px": 320
+}
