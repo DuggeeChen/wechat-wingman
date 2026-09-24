@@ -1,5 +1,6 @@
 """微信军师桌面界面。聊天与回复只在本次运行内存中保留。"""
 import copy
+import hashlib
 import ctypes
 import ctypes.wintypes as wt
 import json
@@ -39,7 +40,7 @@ def candidate_instruction(goal="", previous=None):
     return instruction
 
 
-def load_hint(contact):
+def load_hint(contact, messages=None):
     """读出某个联系人的画像背景块。
 
     返回 dict，不是字符串元组：状态要能被调用方**结构化**地判断，
@@ -79,7 +80,7 @@ def load_hint(contact):
             return out(why="没找到「%s」的画像；有个很像的「%s」" % (shown, similar[0]),
                        state="similar", guess=similar[0])
         return out(why="还没建过这个人的画像", state="none")
-    body, usable, total = P.hint_stats(prof)
+    body, usable, total = P.hint_stats(prof, context=messages)
     if not body:
         if total:
             return out(why="「%s」的画像有 %d 条，但没有一条能回喂（可能都过期或都待复核）"
@@ -155,6 +156,9 @@ class ReplyApp:
         self.geometry_timer = None
         self.closed = False
         self.profile_window = None
+        self.portrait_seen = set()
+        self.portrait_lock = threading.Lock()
+        self.portrait_cancel = threading.Event()
         self.state_path = os.path.join(core.HERE, "ui_state.json")
         self.ui_state = self.read_ui_state()
         self.goal = tk.StringVar()
@@ -428,14 +432,16 @@ class ReplyApp:
                 self.context["name"] = new_name
                 # 名字换了，风格绑定要跟着走，否则界面上显示的风格还是旧名字的
                 bound = self.core.bound_persona(self.cfg, new_name)
-                if bound in self.cfg["personas"]:
-                    self.persona.set(bound)
-                # 改名之后画像状态要重算，不能一律清成「没带」——
-                # 名字若指向一份别名或一份真画像，这次本来就该带上。
+                chosen = bound if bound in self.cfg["personas"] else self.cfg["default_persona"]
+                self.persona.set(chosen)
+                self.context["persona_name"] = chosen
+                # 改名后重新查找画像，但旧卡片没有使用新画像；
+                # 重新生成前不能在界面上声称「已参考画像」。
                 ph = load_hint(new_name)
-                self.context.update(hint_used=bool(ph["text"]), hint_count=ph["count"],
+                self.context.update(hint_used=False, hint_count=0,
                                     hint_why=ph["why"], hint_state=ph["state"],
                                     hint_guess=ph["guess"])
+                self.cards = []
                 changed = True
             if lines and lines != self.context["messages"]:
                 self.context["messages"] = lines
@@ -586,7 +592,7 @@ class ReplyApp:
                     persona = bound
                 # 画像只在**第二轮纯文本请求**注入 —— 第一轮发出去时还不知道联系人是谁。
                 # 若联系人本来就有绑定风格，第二轮请求已经存在，带上画像是零额外成本。
-                ph = load_hint(result["name"])
+                ph = load_hint(result["name"], result["messages"])
                 hint, why, usable, state = ph["text"], ph["why"], ph["count"], ph["state"]
                 first_pass = list(result["candidates"])     # 拷贝：第二轮会重新绑定 candidates
                 if persona != cfg["default_persona"] or hint:
@@ -635,7 +641,7 @@ class ReplyApp:
                 context = payload["context"]
                 style = cfg["personas"].get(payload["persona"], cfg["personas"][cfg["default_persona"]])
                 if mode == "batch":
-                    ph = load_hint(context.get("name", ""))
+                    ph = load_hint(context.get("name", ""), context["messages"])
                     # 「换一批」是纯文本请求，画像顺手带上，零额外调用成本。
                     # 不带的话同一会话内前后不一致：读屏时围着这个人写的，
                     # 换一批就变成了在跟陌生人说话 —— 比从头就没画像更刺眼。
@@ -653,7 +659,7 @@ class ReplyApp:
                 elif mode == "refine":
                     index = payload["index"]
                     # 改写是纯文本请求，画像顺手带上，零额外调用成本。
-                    hint = load_hint(context.get("name", ""))["text"]
+                    hint = load_hint(context.get("name", ""), context["messages"])["text"]
                     prompt = refinement_prompt(context["messages"], payload["cards"][index]["text"],
                                                style, goal, payload["instruction"], hint)
                     emit("refine", (index, parse_refinement(call(None, prompt))))
@@ -671,6 +677,11 @@ class ReplyApp:
             return
         if kind == "stage":
             self.set_status(value, GREEN)
+            return
+        if kind == "portrait_update":
+            if not self.busy and self.context and value["name"] == self.context.get("name"):
+                self.set_status("画像已从本次聊天补充 %d 条新线索；下次生成回复会参考更新后的画像"
+                                % value["count"], GREEN)
             return
         if kind == "hint":
             # 「换一批」也会重新决定带不带画像（比如用户刚确认了「就是这个人」），
@@ -715,6 +726,44 @@ class ReplyApp:
                                 AMBER if r.get("hint_why") else MUTED)
         else:
             self.set_status("回复已更新 · 点击正文即可复制", GREEN)
+        if kind == "read":
+            self.start_portrait_update(job, self.context)
+
+    def start_portrait_update(self, job, context):
+        """回复先显示；只对用户主动读取、且已有整体画像的联系人学习。"""
+        name = context.get("name", "")
+        messages = context.get("messages") or []
+        if (self.testing or not name or len(messages) < 3 or self.portrait_cancel.is_set()
+                or (self.profile_window is not None and self.profile_window.busy)):
+            return
+        profile = P.load(name)
+        if not profile or not profile.get("portrait") or P.has_import_checkpoint(P.resolve(name)):
+            return
+        fingerprint = hashlib.sha256(
+            (self.core.contact_key(name) + "\n" + "\n".join(messages)).encode("utf-8")
+        ).hexdigest()
+        if fingerprint in self.portrait_seen:
+            return
+        self.portrait_seen.add(fingerprint)
+        if len(self.portrait_seen) > 100:
+            self.portrait_seen.clear()
+            self.portrait_seen.add(fingerprint)
+
+        def run():
+            if not self.portrait_lock.acquire(blocking=False):
+                return
+            try:
+                count = P.update_portrait_from_chat(
+                    self.core, copy.deepcopy(self.cfg), self.key, name, messages,
+                    cancel_event=self.portrait_cancel)
+                if count and not self.portrait_cancel.is_set():
+                    self.q.put((job, "portrait_update", {"name": name, "count": count}))
+            except Exception as exc:
+                self.core.log("后台画像更新失败: %s" % type(exc).__name__)
+            finally:
+                self.portrait_lock.release()
+
+        threading.Thread(target=run, daemon=True).start()
 
     def pump(self):
         if self.closed:
@@ -829,6 +878,7 @@ class ReplyApp:
             self.set_status("热键不可用，可点击读取" if error else "就绪 · 热键 " + actual.upper())
 
     def close(self):
+        self.portrait_cancel.set()
         if self.cancel_event:
             self.cancel_event.set()
         if self.profile_window is not None and not self.profile_window.closed:

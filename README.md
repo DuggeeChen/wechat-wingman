@@ -93,7 +93,7 @@ Open the profile window, pick a contact, and **paste 50–100 messages of your c
 
 - It splits the paste by speaker **locally and deterministically**, so it never has to guess who said what.
 - The model extracts observations — each one must come with a **verbatim quote from the paste**. A quote that can't be found in the text is thrown away, so an invented "fact" can't get in.
-- You review the list and can reject any entry (「不准」), with one-click undo of the last import (「撤销上次导入」).
+- You review the list and can reject an entry for that contact (「不准」). One-click undo restores the state before the last import (「撤销上次导入」), including undo of a first import. Merging two profiles is not an import and cannot be undone with that button.
 - Next time you read that chat, the profile rides along in the text-only pass and the candidates are generated with it in mind.
 
 **The profile is yours and it stays local.** It lives in `profiles/` (git-ignored), is plain JSON you can read and delete, and is never sent for any *other* contact. It reaches the model in exactly two situations: when you explicitly build or update it (the paste goes out in full), and on a read of *that* contact's chat (only a ≤600-character digest, quotes stripped). See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact accounting.

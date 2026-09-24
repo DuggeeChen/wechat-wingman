@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -34,6 +35,8 @@ import wx_ui                 # noqa: E402
 _TMP = tempfile.mkdtemp(prefix="wxui-test-")
 P.PROFILE_DIR = os.path.join(_TMP, "profiles")
 P.HISTORY_DIR = os.path.join(P.PROFILE_DIR, ".history")
+P.DELETED_DIR = os.path.join(P.PROFILE_DIR, ".deleted")
+P.IMPORT_DIR = os.path.join(P.PROFILE_DIR, ".imports")
 P.REJECTED_PATH = os.path.join(P.PROFILE_DIR, ".rejected.json")
 # ALIAS_PATH 也必须重定向：它是个独立的模块常量，不跟着 PROFILE_DIR 走。
 # 漏掉它的话，测试里任何一次 set_alias 都会写进**真实的** profiles/.aliases.json ——
@@ -178,6 +181,21 @@ def test_hint_stats_counts():
     eq("带回 2 条（review 那条不算）", used, 2)
     eq("总数是全部条目", total, 3)
     eq("hint() 是 hint_stats 的薄封装", P.hint(prof), text)
+
+
+def test_load_whole_portrait_for_reply():
+    print("\n[回复优先使用整体画像]")
+    portrait = {"overview": "先确认安排", "traits": [
+        {"axis": "表达方式", "text": "先问时间再确定安排", "confidence": "中",
+         "signal_ids": ["sig-0001", "sig-0002"]}],
+        "reply_tips": ["先给明确时间选项"], "updated": "2026-09-01"}
+    _profile("整体测试", [{"kind": "关系事实", "text": "旧事实不应进入回复卡",
+                        "evidence": [{"quote": "旧事实", "at": "2026-09-01"}]}],
+             portrait=portrait)
+    result = wx_ui.load_hint("整体测试", ["对方: 什么时候见面"])
+    eq("整体画像被命中", result["state"], "hit")
+    check("短卡里有表达模式", "先问时间再确定安排" in result["text"])
+    check("旧观察不再直接回喂", "旧事实不应进入回复卡" not in result["text"])
 
 
 # ---------------------------------------------------------------- 改写提示词
@@ -593,6 +611,171 @@ def test_profile_window_builds():
         app.root.destroy()
 
 
+def test_profile_markdown_file_route():
+    print("\n[画像窗口：Markdown 文件导入]")
+    import tkinter as tk
+    from profile_ui import ProfileWindow
+    path = os.path.join(_TMP, "example.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## 2026-09-01\n**12:00:00 | 文件测试：** 明天见\n"
+                "**12:00:01 | 我：** 好\n")
+    app = _app(FakeCore(_first_result()))
+    win = None
+    try:
+        win = ProfileWindow(app)
+        win.name_var.set("文件测试")
+        with patch("profile_ui.filedialog.askopenfilename", return_value=path):
+            win.select_md_file()
+        eq("选中了文件", win.file_path, path)
+        check("文件没有塞进大文本框", not win.text.get("1.0", "end").strip())
+        stats = {"raw": 1, "kept": 1, "dropped": 0, "scrubbed": 0,
+                 "unknown_lines": 0,
+                 "drops": {k: 0 for k in ("bad_kind", "too_long", "other_speaker",
+                                          "no_quote", "rejected")}}
+        observation = {"kind": "时间线", "text": "说过明天见",
+                       "evidence": [{"quote": "明天见", "at": "2026-09-01"}]}
+        portrait = {"overview": "说话直接", "traits": [
+            {"axis": "表达方式", "text": "直接确认时间", "signal_ids": ["sig-0001"],
+             "confidence": "低"}], "reply_tips": ["先给时间"], "updated": "2026-09-01"}
+        with patch.object(P, "extract", return_value=([observation], stats)) as fake, \
+             patch.object(P, "synthesize_portrait", return_value=portrait):
+            win.worker(1, threading.Event(), "文件测试", "", path)
+        check("文件内容送入提取器", "文件测试: [2026-09-01" in fake.call_args.args[3])
+        eq("画像保存成功", len(P.load("文件测试")["observations"]), 1)
+        eq("整体画像已保存", P.load("文件测试")["portrait"]["overview"], "说话直接")
+        eq("记录真实消息数", P.load("文件测试")["stats"]["messages_seen"], 2)
+        win.select("文件测试")
+        def labels(widget):
+            values = ([widget.cget("text")] if isinstance(widget, tk.Label) else [])
+            for child in widget.winfo_children():
+                values.extend(labels(child))
+            return values
+        check("界面展示整体画像", "说话直接" in labels(win.body))
+    finally:
+        if win is not None:
+            win.close()
+        app.root.destroy()
+
+
+def test_profile_markdown_failure_is_atomic():
+    print("\n[画像窗口：长文件中途失败不保存半成品]")
+    from profile_ui import ProfileWindow
+    path = os.path.join(_TMP, "two-parts.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## 2026-09-01\n**12:00:00 | 原子测试：** 第一条\n")
+    app = _app(FakeCore(_first_result()))
+    win = None
+    try:
+        win = ProfileWindow(app)
+        observation = {"kind": "时间线", "text": "说过第一条",
+                       "evidence": [{"quote": "第一条", "at": "2026-09-01"}]}
+        stats = {"raw": 1, "kept": 1, "dropped": 0, "scrubbed": 0,
+                 "unknown_lines": 0,
+                 "drops": {k: 0 for k in ("bad_kind", "too_long", "other_speaker",
+                                          "no_quote", "rejected")}}
+        with patch.object(P, "markdown_chat_chunks", return_value=(["原子测试: 第一条",
+                                                                   "原子测试: 第二条"], 2)), \
+             patch.object(P, "extract", side_effect=[([observation], stats),
+                                                      ValueError("第二段失败")]):
+            win.worker(1, threading.Event(), "原子测试", "", path)
+        eq("中途失败没有写画像", P.load("原子测试"), None)
+        check("首段进度已暂存", P.has_import_checkpoint("原子测试"))
+        portrait = {"overview": "测试", "traits": [{"axis": "表达方式",
+                    "text": "直接", "signal_ids": ["sig-0001"]}], "reply_tips": []}
+        with patch.object(P, "markdown_chat_chunks", return_value=(["原子测试: 第一条",
+                                                                   "原子测试: 第二条"], 2)), \
+             patch.object(P, "extract", return_value=([observation], stats)) as fake, \
+             patch.object(P, "synthesize_portrait", return_value=portrait):
+            win.worker(1, threading.Event(), "原子测试", "", path)
+        eq("续跑只分析剩余段", fake.call_count, 1)
+        check("续跑后正式画像可用", P.load("原子测试") is not None)
+        check("完成后断点已清理", not P.has_import_checkpoint("原子测试"))
+    finally:
+        if win is not None:
+            win.close()
+        app.root.destroy()
+
+
+def test_profile_file_to_reply_card_end_to_end():
+    print("\n[文件导入 → 整体画像 → 回复参考卡]")
+    import json
+    import re
+    from profile_ui import ProfileWindow
+    path = os.path.join(_TMP, "portrait-e2e.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## 2026-09-01\n**12:00:00 | 链路测试：** 先把时间定下来\n"
+                "**12:00:01 | 我：** 好的\n")
+    fake = FakeCore(_first_result())
+
+    def answer(cfg, key, image, prompt, cancel_event=None, system=None, deadline=None):
+        if system == P.EXTRACT_SYSTEM:
+            return json.dumps({"observations": [], "signals": [{
+                "axis": "表达方式", "text": "这次先确认时间", "quote": "先把时间定下来",
+                "at": "2026-09-01"}]}, ensure_ascii=False), None
+        ids = re.findall(r'"id":\s*"([^"]+)"', prompt)
+        return json.dumps({"overview": "交流时先确认安排", "traits": [{
+            "axis": "表达方式", "text": "先明确时间再继续讨论", "signal_ids": ids[:1]}],
+            "reply_tips": ["先给时间选项"]}, ensure_ascii=False), None
+
+    fake.call_model = answer
+    app = _app(fake)
+    win = None
+    try:
+        win = ProfileWindow(app)
+        win.worker(1, threading.Event(), "链路测试", "", path)
+        prof = P.load("链路测试")
+        check("只凭线索也保存整体画像", prof is not None and bool(prof.get("portrait")))
+        card = wx_ui.load_hint("链路测试", ["对方: 什么时候方便"])
+        check("回复读取整体画像", "先明确时间再继续讨论" in card["text"])
+        check("卡片不含原始引用", "先把时间定下来" not in card["text"])
+    finally:
+        if win is not None:
+            win.close()
+        app.root.destroy()
+
+
+def test_profile_markdown_bad_json_splits_and_recovers():
+    print("\n[画像窗口：模型 JSON 异常自动拆段]")
+    from profile_ui import ProfileWindow
+    path = os.path.join(_TMP, "retry-parts.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## 2026-09-01\n**12:00:00 | 拆段测试：** 消息一\n")
+    app = _app(FakeCore(_first_result()))
+    win = None
+    calls = []
+    try:
+        win = ProfileWindow(app)
+        stats = {"raw": 1, "kept": 1, "dropped": 0, "scrubbed": 0,
+                 "unknown_lines": 0,
+                 "drops": {k: 0 for k in ("bad_kind", "too_long", "other_speaker",
+                                          "no_quote", "rejected")}}
+
+        def fake_extract(_core, _cfg, _key, raw, _name, cancel_event=None):
+            calls.append(raw)
+            if len(raw.splitlines()) > 2:
+                raise P.ModelOutputError("模拟截断 JSON")
+            obs = {"kind": "时间线", "text": "提到消息",
+                   "evidence": [{"quote": "消息一", "at": "2026-09-01"}]}
+            return [obs], stats
+
+        lines = ["拆段测试: 消息一", "我: 好", "拆段测试: 消息一", "我: 好"]
+        with patch.object(P, "markdown_chat_chunks", return_value=(["\n".join(lines)], 4)), \
+             patch.object(P, "extract", side_effect=fake_extract), \
+             patch.object(P, "synthesize_portrait", return_value={"overview": "测试",
+                 "traits": [{"axis": "表达方式", "text": "测试", "signal_ids": ["sig-0001"],
+                             "confidence": "低"}], "reply_tips": [], "updated": "2026-09-01"}):
+            win.worker(1, threading.Event(), "拆段测试", "", path)
+        eq("先失败再拆成两半", len(calls), 3)
+        eq("四条消息仍计入", P.load("拆段测试")["stats"]["messages_seen"], 4)
+        check("拆分后保存了画像", bool(P.load("拆段测试")["observations"]))
+        check("界面报告重试", any(k == "stage" and "拆小重试" in v
+                                for _j, k, v in list(win.q.queue)))
+    finally:
+        if win is not None:
+            win.close()
+        app.root.destroy()
+
+
 def test_profile_window_reject():
     print("\n[画像窗口：点「不准」]")
     _profile("删除测试", [{"kind": "关系事实", "text": "在建材行业",
@@ -606,7 +789,34 @@ def test_profile_window_reject():
         obs_id = win.observations[0]["id"]
         win.reject_one(obs_id)
         eq("条目被删掉", len(P.load("删除测试")["observations"]), 0)
-        check("进了黑名单", "在建材行业" in P.rejected_list())
+        check("进了黑名单", "在建材行业" in P.rejected_list("删除测试"))
+    finally:
+        if win is not None:
+            win.close()
+        app.root.destroy()
+
+
+def test_profile_window_delete_and_restore():
+    print("\n[画像窗口：确认后删除整份画像，并可恢复]")
+    _profile("删除界面测试", [{"kind": "关系事实", "text": "喜欢看展",
+                          "evidence": [{"quote": "喜欢看展", "at": "2026-09-23"}]}])
+    from profile_ui import ProfileWindow
+    app = _app(FakeCore(_first_result()))
+    win = None
+    try:
+        win = ProfileWindow(app)
+        win.select("删除界面测试")
+        with patch("profile_ui.messagebox.askyesno", return_value=False):
+            win.delete_contact()
+        check("取消确认时画像还在", P.load("删除界面测试") is not None)
+        with patch("profile_ui.messagebox.askyesno", return_value=True):
+            win.delete_contact()
+        eq("确认后回复不再能读取画像", P.load("删除界面测试"), None)
+        check("删除后留有可恢复归档", bool(win.last_deleted)
+              and os.path.isfile(win.last_deleted))
+        win.restore_deleted()
+        check("窗口内恢复成功", P.load("删除界面测试") is not None)
+        eq("恢复后重新选中", win.current, "删除界面测试")
     finally:
         if win is not None:
             win.close()
@@ -806,9 +1016,10 @@ def test_rename_recomputes_hint_state():
             e.delete(0, "end")
             e.insert(0, "陈晓明")
         next(b for b in _buttons(_dialog(app)) if "保存纠正" in b.cget("text")).invoke()
-        eq("改名后重算出「带上了」", app.context["hint_used"], True)
+        eq("改名后尚未重新生成", app.context["hint_used"], False)
         eq("状态是 hit", app.context["hint_state"], "hit")
         eq("名字已更新", app.context["name"], "陈晓明")
+        eq("旧卡片已清空", app.cards, [])
         # 而且本次的「换一批」就该带上
         events2 = _run_batch(app)
         check("换一批带上了背景块",
@@ -1037,6 +1248,58 @@ def test_profile_window_use_known_clears_pending():
         app.root.destroy()
 
 
+def test_correct_name_resets_style_and_cards():
+    print("\n[只改联系人名字：清旧卡片并重算风格]")
+    import tkinter as tk
+    app = _app(FakeCore(_first_result()))
+    app.cfg["contact_personas"] = {"旧联系人_风格测试": "亲密"}
+    app.context = {"name": "旧联系人_风格测试", "kind": "单聊",
+                   "messages": ["对方: 你好"], "read_at": "12:00:00",
+                   "persona_name": "亲密", "hint_used": False}
+    app.cards = [{"label": "旧回复", "text": "按旧人写的回复"}]
+    app.persona.set("亲密")
+    app.refresh_context()
+    app.render_cards()
+    try:
+        app.show_context()
+        def find_entry(parent):
+            for w in parent.winfo_children():
+                if isinstance(w, tk.Entry):
+                    return w
+                found = find_entry(w)
+                if found is not None:
+                    return found
+            return None
+        entry = find_entry(_dialog(app))
+        check("找到联系人编辑框", entry is not None)
+        if entry is not None:
+            entry.delete(0, "end")
+            entry.insert(0, "新联系人_风格测试")
+        next(b for b in _buttons(_dialog(app)) if b.cget("text") == "保存纠正").invoke()
+        eq("新联系人未绑定就用默认风格", app.persona.get(), "默认")
+        eq("旧回复卡片清空", app.cards, [])
+    finally:
+        app.root.destroy()
+
+
+def test_profile_close_preserves_main_wheel():
+    print("\n[关闭画像窗口后主窗口滚轮仍可用]")
+    app = _app(FakeCore(_first_result()))
+    try:
+        before = app.root.bind_all("<MouseWheel>")
+        app.open_profile()
+        app.profile_window.close()
+        check("原有滚轮绑定保留", bool(before) and app.root.bind_all("<MouseWheel>") == before)
+    finally:
+        app.root.destroy()
+
+
+def test_numeric_reply_preserved():
+    print("\n[数字开头的回复不被截字]")
+    got = core.parse_reply("【回复候选】\n1. 10点见\n2. 2026年再约")["candidates"]
+    eq("数字正文保持完整", got, ["10点见", "2026年再约"])
+
+
 def main():
     print("界面接线回归测试（临时目录：%s）" % _TMP)
     try:
@@ -1045,6 +1308,7 @@ def main():
         test_bound_persona()
         test_load_hint_states()
         test_hint_stats_counts()
+        test_load_whole_portrait_for_reply()
         test_refinement_prompt()
         test_heal_old_entries()
         test_merge_reports_new_evidence()
@@ -1061,8 +1325,16 @@ def main():
         test_confirm_similar_name_uses_profile_now()
         test_batch_emits_hint_state()
         test_rename_recomputes_hint_state()
+        test_correct_name_resets_style_and_cards()
+        test_profile_close_preserves_main_wheel()
+        test_numeric_reply_preserved()
         test_profile_window_builds()
+        test_profile_markdown_file_route()
+        test_profile_markdown_failure_is_atomic()
+        test_profile_file_to_reply_card_end_to_end()
+        test_profile_markdown_bad_json_splits_and_recovers()
         test_profile_window_reject()
+        test_profile_window_delete_and_restore()
         test_profile_window_merge_contact()
         test_profile_window_merge_empty_source()
         test_merge_dialog_lists_every_candidate()

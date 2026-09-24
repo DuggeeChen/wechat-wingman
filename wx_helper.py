@@ -524,7 +524,7 @@ def parse_reply(txt):
         if cur == "msg":
             out["messages"].append(line)
         elif cur == "cand":
-            s = line.lstrip("0123456789.、)） ").strip()
+            s = re.sub(r"^\d+[.、)）]\s*", "", line).strip()
             if s and s not in out["candidates"]:
                 out["candidates"].append(s)
     if not out["candidates"]:                      # 模型不听话时的兜底

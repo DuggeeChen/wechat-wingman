@@ -13,6 +13,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from tkinter import filedialog, messagebox
 
 import profile as P
 from ui_theme import (AMBER, BG, BODY, FONT, GREEN, HEAD, INK, LINE, MUTED, PALE,
@@ -27,10 +28,13 @@ class ProfileWindow:
         self.epoch = 0
         self.cancel_event = None
         self.busy = False
+        self.file_path = None
         self.current = None                 # 当前查看的联系人名
+        self.last_deleted = None            # 本窗口中最近一次删除的归档路径
         self.pending_name = ""              # 等用户确认「名字很像，是不是同一个人」
         self.observations = []              # 当前画像的条目（供「不准」按钮定位）
         self.show_quotes = tk.BooleanVar(value=False)
+        self.show_evidence = tk.BooleanVar(value=False)
         self.closed = False
 
         self.top = tk.Toplevel(app.root)
@@ -119,8 +123,9 @@ class ProfileWindow:
         paste.pack(fill="both", expand=True, pady=(0, 10))
         title = tk.Frame(paste.body, bg=WHITE)
         title.pack(fill="x", pady=(0, 6))
-        self.label(title, "粘贴聊天记录", font=HEAD).pack(side="left")
-        self.label(title, "从微信里选中消息复制，保留「昵称: 」开头", MUTED, SMALL).pack(side="right")
+        self.label(title, "粘贴聊天记录 / 导入 Markdown", font=HEAD).pack(side="left")
+        self.file_btn = self.button(title, "选择 .md 文件", self.select_md_file, small=True)
+        self.file_btn.pack(side="right")
         self.text = tk.Text(paste.body, font=FONT, wrap="word", bg=BG, fg=INK,
                             relief="flat", padx=10, pady=10, height=12,
                             insertbackground=GREEN)
@@ -140,15 +145,36 @@ class ProfileWindow:
         self.clear_btn.pack(side="right")
 
     def on_modified(self, _event=None):
+        if not self.text.edit_modified():
+            return
         self.text.edit_modified(False)
+        if self.file_path:
+            self.file_path = None
         raw = self.text.get("1.0", "end")
         lines = [ln for ln in raw.splitlines() if ln.strip()]
         chars = len(raw)
         self.count_label.configure(text="%d 行 · %d 字" % (len(lines), chars))
 
     def clear_text(self):
+        self.file_path = None
         self.text.delete("1.0", "end")
-        self.on_modified()
+        self.text.edit_modified(False)
+        self.count_label.configure(text="")
+
+    def select_md_file(self):
+        path = filedialog.askopenfilename(parent=self.top, title="选择聊天记录 Markdown",
+                                          filetypes=[("Markdown 文件", "*.md")])
+        if not path:
+            return
+        if not os.path.isfile(path):
+            self.set_status("找不到所选文件，请重新选择", RED)
+            return
+        self.text.delete("1.0", "end")
+        self.text.edit_modified(False)
+        self.file_path = path
+        self.count_label.configure(text="已选择：%s（%.1f KB）· 点击生成后分段处理" %
+                                   (os.path.basename(path), os.path.getsize(path) / 1024))
+        self.set_status("文件已选好；请确认上面的联系人名字，再点击生成 / 更新画像", GREEN)
 
     def prefill(self, name):
         """主窗口已经认出联系人时，直接带过来，省得手输（也就少一次对不上）。"""
@@ -181,6 +207,10 @@ class ProfileWindow:
             bar, text="显示原话", variable=self.show_quotes, command=self.render_profile,
             bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG, font=SMALL, relief="flat")
         self.quote_toggle.pack(side="right")
+        self.evidence_toggle = tk.Checkbutton(
+            bar, text="显示证据层", variable=self.show_evidence, command=self.render_profile,
+            bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG, font=SMALL, relief="flat")
+        self.evidence_toggle.pack(side="right", padx=(0, 8))
 
         scroll = tk.Frame(page, bg=BG)
         scroll.pack(fill="both", expand=True)
@@ -195,13 +225,22 @@ class ProfileWindow:
                        lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>",
                          lambda e: self.canvas.itemconfigure(self.body_id, width=e.width))
-        self.canvas.bind_all("<MouseWheel>", self.mousewheel, add="+")
+        self.top.bind("<MouseWheel>", self.mousewheel, add="+")
 
         tools = tk.Frame(page, bg=BG)
         tools.pack(fill="x", pady=(8, 0))
-        self.undo_btn = self.button(tools, "撤销上次导入", self.do_undo)
-        self.undo_btn.pack(side="left")
+        self.undo_btn = self.button(tools, "撤销上次画像更新", self.do_undo)
+        if P.can_undo(self.current):
+            self.undo_btn.pack(side="left")
+        else:
+            self.undo_btn.pack_forget()
         self.undo_btn.pack_forget()
+        self.restore_btn = self.button(tools, "恢复刚删除的画像", self.restore_deleted, small=True)
+        self.restore_btn.pack_forget()
+        self.delete_btn = self.button(tools, "删除画像…", self.delete_contact,
+                                      small=True, danger=True)
+        self.delete_btn.pack(side="right", padx=(0, 8))
+        self.delete_btn.pack_forget()
         self.merge_btn = self.button(tools, "并入另一个画像…", self.open_merge)
         self.merge_btn.pack(side="right")
         self.merge_btn.pack_forget()
@@ -244,30 +283,39 @@ class ProfileWindow:
         if not self.current:
             self.undo_btn.pack_forget()
             self.merge_btn.pack_forget()
+            self.delete_btn.pack_forget()
             return
         prof = P.load(self.current)
         if not prof:
             self.label(self.body, "读不到「%s」的画像。" % self.current, RED).pack(pady=20)
             return
         obs = prof["observations"]
+        portrait = prof.get("portrait") if isinstance(prof.get("portrait"), dict) else None
         self.observations = obs
         s = prof["stats"]
-        self.undo_btn.pack(side="left")
+        if P.can_undo(self.current):
+            self.undo_btn.pack(side="left")
+        else:
+            self.undo_btn.pack_forget()
         self.merge_btn.pack(side="right")
+        self.delete_btn.pack(side="right", padx=(0, 8))
 
         info = Panel(self.body)
         info.pack(fill="x", pady=(0, 12))
         self.label(info.body, self.current, font=HEAD).pack(fill="x")
         self.label(info.body,
-                   "%d 条观察 · 看过 %d 条消息 · 导入 %d 次 · 更新于 %s"
+                   "%d 条证据观察 · 看过 %d 条消息 · 导入 %d 次 · 更新于 %s"
                    % (len(obs), s.get("messages_seen", 0), s.get("batches", 0),
                       (prof.get("updated") or "")[:16].replace("T", " ")),
                    MUTED, SMALL).pack(fill="x", pady=(4, 0))
         if prof.get("migrated"):
             self.label(info.body, "⚠ 有 %d 条旧类别条目已标记「待复核」，不会喂给模型"
                        % prof["migrated"], AMBER, SMALL).pack(fill="x", pady=(4, 0))
+        if portrait and portrait.get("stale"):
+            self.label(info.body, "⚠ 合并后的整体画像尚未重新归纳；回复暂用证据观察。"
+                       "下次导入聊天时会重新生成。", AMBER, SMALL).pack(fill="x", pady=(4, 0))
 
-        if not obs:
+        if not obs and not portrait:
             self.label(self.body, "这个画像还是空的。", MUTED).pack(pady=16)
             return
 
@@ -279,20 +327,52 @@ class ProfileWindow:
                            "识别到的「%s」也算作这个人（不用再确认）" % "」「".join(mine),
                            MUTED, SMALL).pack(fill="x", pady=(4, 0))
 
-        for kind in P.KINDS:
-            group = [o for o in obs if o["kind"] == kind]
-            if not group:
-                continue
-            head = self.label(self.body, "%s · %d 条" % (kind, len(group)),
-                              GREEN, ("Microsoft YaHei UI", 10, "bold"))
-            head.pack(fill="x", padx=4, pady=(8, 6))
-            for o in group:
-                self.render_obs(o)
+        if portrait:
+            card = Panel(self.body)
+            card.pack(fill="x", pady=(0, 12))
+            self.label(card.body, "整体人物画像", font=HEAD).pack(fill="x")
+            if portrait.get("overview"):
+                self.label(card.body, portrait["overview"], font=BODY,
+                           wraplength=550).pack(fill="x", pady=(8, 4))
+            for axis in P.PORTRAIT_AXES:
+                for trait in portrait.get("traits") or []:
+                    if trait.get("axis") != axis:
+                        continue
+                    self.label(card.body, "%s · %s" % (axis, trait.get("confidence", "低")),
+                               GREEN, SMALL).pack(fill="x", pady=(8, 0))
+                    self.label(card.body, trait.get("text", ""), font=BODY,
+                               wraplength=550).pack(fill="x", pady=(2, 0))
+                    self.label(card.body, "%d 条线索支持" % len(trait.get("signal_ids") or []),
+                               MUTED, SMALL).pack(fill="x", pady=(2, 0))
+                    if self.show_evidence.get():
+                        by_id = {s.get("id"): s for s in prof.get("portrait_sources") or []}
+                        for sid in (trait.get("signal_ids") or [])[:3]:
+                            source = by_id.get(sid)
+                            if source:
+                                self.label(card.body, "依据：「%s」 %s" %
+                                           (source.get("quote", ""), source.get("at", "")),
+                                           MUTED, SMALL, wraplength=540).pack(fill="x", pady=(2, 0))
+            if portrait.get("reply_tips"):
+                self.label(card.body, "回复时的分寸", font=HEAD).pack(fill="x", pady=(12, 2))
+                for tip in portrait["reply_tips"]:
+                    self.label(card.body, "· " + tip, MUTED, SMALL,
+                               wraplength=550).pack(fill="x", pady=(2, 0))
+
+        if not portrait or self.show_evidence.get():
+            for kind in P.KINDS:
+                group = [o for o in obs if o["kind"] == kind]
+                if not group:
+                    continue
+                head = self.label(self.body, "%s · %d 条" % (kind, len(group)),
+                                  GREEN, ("Microsoft YaHei UI", 10, "bold"))
+                head.pack(fill="x", padx=4, pady=(8, 6))
+                for o in group:
+                    self.render_obs(o)
 
         hint = P.hint(prof)
         hp = Panel(self.body)
         hp.pack(fill="x", pady=(14, 0))
-        self.label(hp.body, "实际会喂给模型的内容", font=HEAD).pack(fill="x")
+        self.label(hp.body, "回复时的参考卡（实际会动态选取）", font=HEAD).pack(fill="x")
         self.label(hp.body, hint if hint else "（空 —— 现在回复时不会带上任何背景）",
                    MUTED if hint else AMBER, SMALL, wraplength=560).pack(fill="x", pady=(6, 0))
 
@@ -327,18 +407,57 @@ class ProfileWindow:
         target = next((o for o in prof["observations"] if o["id"] == obs_id), None)
         if not target:
             return
-        P.reject(self.current, target["text"])
+        if not P.reject(self.current, target["text"]):
+            self.set_status("未能记住这条拒绝，请检查画像目录", RED)
+            return
+        P.drop_portrait_quotes(prof, [e.get("quote", "") for e in target.get("evidence") or []])
         P.drop_observation(prof, obs_id)
-        P.save(prof, snapshot=True)
+        if not P.save(prof):
+            self.set_status("画像保存失败，请检查画像目录", RED)
+            return
         self.render_profile()
-        self.set_status("已删除并列入黑名单，以后不会再提取到这条", GREEN)
+        self.set_status("已删除该观察及同原话画像线索；以后不会重新采用它们", GREEN)
 
     def do_undo(self):
         if not self.current:
             return
         ok = P.undo(self.current)
-        self.render_profile()
-        self.set_status("已撤销上次导入" if ok else "没有可撤销的快照", GREEN if ok else MUTED)
+        self.refresh_contacts()
+        self.set_status("已撤销上次画像更新" if ok else "没有可撤销的快照", GREEN if ok else MUTED)
+
+    def delete_contact(self):
+        if not self.current or self.busy:
+            return
+        name = self.current
+        confirmed = messagebox.askyesno(
+            "删除人物画像", "确定删除「%s」的整份画像吗？\n\n"
+            "删除后新生成的回复不再使用它，并移到可恢复归档。"
+            "本窗口可点「恢复刚删除的画像」。" % name,
+            parent=self.top, icon="warning")
+        if not confirmed:
+            return
+        archive = P.archive_contact(name)
+        if not archive:
+            self.set_status("删除失败，原画像没有改动", RED)
+            return
+        self.last_deleted = archive
+        self.current = None
+        self.refresh_contacts()
+        self.restore_btn.pack(side="left", padx=(8, 0))
+        self.set_status("已移除「%s」的画像；需要时可点「恢复刚删除的画像」" % name, GREEN)
+
+    def restore_deleted(self):
+        if not self.last_deleted or self.busy:
+            return
+        name = P.restore_archived_contact(self.last_deleted)
+        if not name:
+            self.set_status("恢复失败：可能已有同名画像，归档仍保留", RED)
+            return
+        self.last_deleted = None
+        self.restore_btn.pack_forget()
+        self.current = name
+        self.refresh_contacts()
+        self.set_status("已恢复「%s」的画像" % name, GREEN)
 
     def open_merge(self):
         """把另一个联系人的画像并进当前这个。
@@ -387,7 +506,11 @@ class ProfileWindow:
             if not sel:                      # 用户把选中取消了：别拿 others[0] 顶包
                 return
             src = lb.get(sel[0])
-            moved, _ = P.merge_contact(self.current, src)
+            try:
+                moved, _ = P.merge_contact(self.current, src)
+            except OSError:
+                self.set_status("合并保存失败，源画像仍在", RED)
+                return
             top.destroy()
             self.refresh_contacts()
             self.render_profile()
@@ -411,6 +534,9 @@ class ProfileWindow:
         self.clear_btn.configure(state="disabled" if busy else "normal")
         self.entry.configure(state="disabled" if busy else "normal")
         self.text.configure(state="disabled" if busy else "normal")
+        self.file_btn.configure(state="disabled" if busy else "normal")
+        self.delete_btn.configure(state="disabled" if busy else "normal")
+        self.restore_btn.configure(state="disabled" if busy else "normal")
         if busy:
             self.cancel_btn.pack(side="left")
         else:
@@ -425,10 +551,11 @@ class ProfileWindow:
             return
         name = self.name_var.get().strip()
         raw = self.text.get("1.0", "end").strip()
+        file_path = self.file_path
         if not name:
             self.set_status("先填「这是谁」—— 要和微信里显示的名字一致", RED)
             return
-        if len([ln for ln in raw.splitlines() if ln.strip()]) < 2:
+        if not file_path and len([ln for ln in raw.splitlines() if ln.strip()]) < 2:
             self.set_status("粘贴的聊天太短了，至少要有几行带「昵称: 」的消息", RED)
             return
 
@@ -449,45 +576,146 @@ class ProfileWindow:
         self.cancel_event = event
         self.set_busy(True)
         self.set_status("正在解析说话人…", GREEN)
-        threading.Thread(target=self.worker, args=(job, event, name, raw), daemon=True).start()
+        threading.Thread(target=self.worker, args=(job, event, name, raw, file_path),
+                         daemon=True).start()
 
-    def worker(self, job, event, name, raw):
+    def worker(self, job, event, name, raw, file_path=None):
         def emit(kind, value):
             if not event.is_set():
                 self.q.put((job, kind, value))
         try:
             cfg = copy.deepcopy(self.cfg)
-            obs, stats = P.extract(self.core, cfg, self.key, raw, name,
-                                   cancel_event=event)
-            if event.is_set():
-                return
-            if not obs:
-                d = stats["drops"]
-                emit("error", "这段聊天里没提取到能验证的观察（模型给了 %d 条，"
-                              "全部被拦下：类别非法 %d / 超长 %d / 不是对方说的 %d / "
-                              "引用搜不到 %d）。换一段对方话多一点的试试。"
-                     % (stats["raw"], d["bad_kind"], d["too_long"],
-                        d["other_speaker"], d["no_quote"]))
-                return
-            emit("stage", "正在并入已有画像…")
+            checkpoint = None
+            base_hash = None
+            if file_path:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    source = f.read()
+                chunks, message_count = P.markdown_chat_chunks(source)
+                checkpoint = P.import_checkpoint_path(name, source)
+                base_hash = P.profile_disk_hash(name)
+            else:
+                chunks = [raw]
+                message_count = len([ln for ln in raw.splitlines() if ln.strip()])
+                base_hash = P.profile_disk_hash(name)
             prof = P.load(name) or P.blank(name)
             before = len(prof["observations"])
-            added, merged, contra, new_evidence = P.merge_with_evidence(
-                self.core, cfg, self.key, prof, obs, cancel_event=event)
+            stats = {"raw": 0, "kept": 0, "dropped": 0, "scrubbed": 0,
+                     "unknown_lines": 0,
+                     "drops": {k: 0 for k in ("bad_kind", "too_long", "other_speaker",
+                                              "no_quote", "rejected")}}
+            added = merged = contra = new_evidence = 0
+            signals, fallback_signals = [], []
+            start_index = 0
+            if checkpoint:
+                saved = P.load_import_checkpoint(checkpoint, name, base_hash, len(chunks))
+                if saved:
+                    prof, stats = saved["profile"], saved["stats"]
+                    signals, fallback_signals = saved["signals"], saved["fallback_signals"]
+                    added, merged, contra, new_evidence = saved["counts"]
+                    before = saved["before"]
+                    start_index = saved["next_index"]
+                    emit("stage", "已恢复 Markdown 进度：前 %d/%d 段已完成" %
+                         (start_index, len(chunks)))
+
+            def extract_parts(chunk, index, depth=0):
+                if event.is_set():
+                    return []
+                try:
+                    return [P.extract(self.core, cfg, self.key, chunk, name,
+                                      cancel_event=event)]
+                except P.FormatRefused:
+                    if not file_path:
+                        raise
+                    return []  # 这段只有「我」或系统消息
+                except P.ModelOutputError as exc:
+                    if not file_path:
+                        raise
+                    lines = chunk.splitlines()  # Markdown 转换后一行就是一条完整消息
+                    if len(lines) < 2 or depth >= 8:
+                        raise ValueError("第 %d/%d 段多次缩小后模型仍未返回有效 JSON；"
+                                         "画像未保存。请稍后重试或换一个模型。" %
+                                         (index, len(chunks))) from exc
+                    middle = len(lines) // 2
+                    emit("stage", "第 %d/%d 段输出格式异常，正在拆小重试…" %
+                         (index, len(chunks)))
+                    return (extract_parts("\n".join(lines[:middle]), index, depth + 1)
+                            + extract_parts("\n".join(lines[middle:]), index, depth + 1))
+
+            for index, chunk in enumerate(chunks[start_index:], start_index + 1):
+                if event.is_set():
+                    return
+                if file_path:
+                    emit("stage", "正在分析 Markdown：第 %d/%d 段（共 %d 条消息）…" %
+                         (index, len(chunks), message_count))
+                for obs, part in extract_parts(chunk, index):
+                    if event.is_set():
+                        return
+                    for k in ("raw", "kept", "dropped", "scrubbed", "unknown_lines"):
+                        stats[k] += part[k]
+                    for k, v in part["drops"].items():
+                        stats["drops"][k] += v
+                    signals.extend(part.get("signals") or [])
+                    fallback_signals.extend(P.signals_from_observations(obs))
+                    if not obs:
+                        continue
+                    emit("stage", "正在合并画像：第 %d/%d 段…" % (index, len(chunks)))
+                    a, m, c, e = P.merge_with_evidence(
+                        self.core, cfg, self.key, prof, obs, cancel_event=event)
+                    added += a
+                    merged += m
+                    contra += c
+                    new_evidence += e
+                if event.is_set():
+                    return
+                if checkpoint:
+                    P.save_import_checkpoint(checkpoint, {
+                        "contact_key": P.core.contact_key(name),
+                        "base_hash": base_hash, "total": len(chunks),
+                        "next_index": index, "before": before, "profile": prof,
+                        "stats": stats, "signals": signals,
+                        "fallback_signals": fallback_signals,
+                        "counts": [added, merged, contra, new_evidence]})
             if event.is_set():
                 return
+            if not stats["kept"] and not signals:
+                if checkpoint and os.path.exists(checkpoint):
+                    os.unlink(checkpoint)  # 没有可续跑的分析结果，下次应重新提取
+                emit("error", "聊天记录已分析完，但没有提取到有依据的画像线索；没有修改画像")
+                return
+            new_signals = P.add_portrait_signals(prof, signals or fallback_signals)
+            if prof["portrait_sources"]:
+                emit("stage", "正在归纳整体人物画像…")
+                portrait = P.synthesize_portrait(
+                    self.core, cfg, self.key, prof["portrait_sources"],
+                    cancel_event=event, progress=lambda msg: emit("stage", msg))
+                if event.is_set():
+                    return
+                prof["portrait"] = portrait
             prof["stats"]["batches"] = prof["stats"].get("batches", 0) + 1
             prof["stats"]["messages_seen"] = (prof["stats"].get("messages_seen", 0)
-                                              + len([ln for ln in raw.splitlines() if ln.strip()]))
+                                              + message_count)
             prof["stats"]["rejected"] = prof["stats"].get("rejected", 0) + stats["dropped"]
-            if not P.save(prof, snapshot=True):
-                emit("error", "画像保存失败，请检查目录权限")
-                return
+            with P.PROFILE_WRITE_LOCK:
+                if P.profile_disk_hash(name) != base_hash:
+                    emit("error", "处理期间这份画像已被更新；为避免覆盖新内容，本次没有保存，请重新开始")
+                    return
+                if not P.save(prof, snapshot=True):
+                    emit("error", "画像保存失败，请检查目录权限")
+                    return
+            if checkpoint:
+                try:
+                    os.unlink(checkpoint)
+                except FileNotFoundError:
+                    pass
             emit("done", {"name": name, "before": before, "after": len(prof["observations"]),
                           "added": added, "merged": merged, "contra": contra,
-                          "new_evidence": new_evidence, "stats": stats})
+                          "new_evidence": new_evidence, "new_signals": new_signals,
+                          "portrait_traits": len((prof.get("portrait") or {}).get("traits") or []),
+                          "stats": stats})
         except P.FormatRefused as e:
             emit("error", "格式认不出来：%s" % e)
+        except (OSError, UnicodeError):
+            emit("error", "文件读取失败，请检查文件路径和 UTF-8 编码")
         except ValueError as e:
             emit("error", str(e))
         except Exception as e:
@@ -523,6 +751,9 @@ class ProfileWindow:
             msg += " · 已屏蔽敏感信息 %d 处" % s["scrubbed"]
         if s["unknown_lines"]:
             msg += " · 有 %d 行没认出说话人，没当证据用" % s["unknown_lines"]
+        if v.get("portrait_traits"):
+            msg = ("整体画像已更新：%d 个核心特征 · 本次新增 %d 条可核对线索。"
+                   % (v["portrait_traits"], v.get("new_signals", 0)))
         self.set_status(msg, GREEN)
         self.clear_text()
         self.current = v["name"]
@@ -539,19 +770,17 @@ class ProfileWindow:
         self.top.after(80, self.pump)
 
     def cancel(self):
+        had_file = bool(self.file_path)
         if self.cancel_event:
             self.cancel_event.set()
         self.epoch += 1
         self.set_busy(False)
-        self.set_status("已取消，画像没有被改动")
+        self.set_status("已取消，正式画像没有被改动；再次选择同一文件可接着处理已完成的分段"
+                        if had_file else "已取消，画像没有被改动")
 
     def close(self):
         if self.cancel_event:
             self.cancel_event.set()
         self.closed = True
         self.epoch += 1
-        try:
-            self.canvas.unbind_all("<MouseWheel>")
-        except tk.TclError:
-            pass
         self.top.destroy()

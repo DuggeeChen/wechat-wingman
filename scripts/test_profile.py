@@ -15,12 +15,14 @@
   · 回喂块有条数上限、且**永远不返回空字符串**
   · 丢弃桶互斥，raw == kept + sum(drops) 必须成立
 """
+import json
 import os
 import re
 import shutil
 import sys
 import tempfile
 import unicodedata
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -32,6 +34,8 @@ import profile as P   # noqa: E402
 _TMP = tempfile.mkdtemp(prefix="wxprofile-test-")
 P.PROFILE_DIR = os.path.join(_TMP, "profiles")
 P.HISTORY_DIR = os.path.join(P.PROFILE_DIR, ".history")
+P.DELETED_DIR = os.path.join(P.PROFILE_DIR, ".deleted")
+P.IMPORT_DIR = os.path.join(P.PROFILE_DIR, ".imports")
 P.REJECTED_PATH = os.path.join(P.PROFILE_DIR, ".rejected.json")
 P.ALIAS_PATH = os.path.join(P.PROFILE_DIR, ".aliases.json")
 
@@ -77,6 +81,118 @@ def test_speaker_basic():
     check("用户的话不在对方块里",
           not any("刚下班" in c for c in sp["other_chunks"]))
     eq("没有未识别行", sp["unknown_lines"], 0)
+
+
+def test_markdown_chat_chunks():
+    print("\n[Markdown 聊天导入]")
+    md = ("# 某人\n- 导出信息：忽略\n\n## 2026-09-01\n\n"
+          "**12:00:01 | 林静：** 明天见\n\n"
+          "**12:00:02 | 我：** 好的\n\n"
+          "## 2026-09-02\n\n**09:00:00 | 林静：** 我先出门\n继续一行\n")
+    chunks, count = P.markdown_chat_chunks(md, max_chars=42)
+    eq("三条消息都保留", count, 3)
+    check("按消息分段", len(chunks) >= 2)
+    joined = "\n".join(chunks)
+    check("日期保留", "2026-09-02" in joined)
+    check("续行保留", "继续一行" in joined)
+    check("导出元数据不混入消息", "导出信息" not in joined)
+    sp = P.parse_speakers(joined, "林静")
+    eq("对方说话标签能认出", sp["labels"].get("林静"), "other")
+    eq("自己说话标签能认出", sp["labels"].get("我"), "user")
+    try:
+        P.markdown_chat_chunks("# 没有消息")
+    except P.FormatRefused:
+        check("不认识的格式明确报错", True)
+    else:
+        check("不认识的格式明确报错", False)
+
+
+def test_whole_portrait():
+    print("\n[整体人物画像]")
+    speakers = P.parse_speakers("林静: 先把时间定下来\n我: 不要提这句\n", "林静")
+    signals = P.validate_signals([
+        {"axis": "表达方式", "text": "这次先确认时间", "quote": "先把时间定下来",
+         "at": "2026-09-01"},
+        {"axis": "表达方式", "text": "不该收", "quote": "不要提这句"},
+    ], speakers)
+    eq("只收对方的逐字线索", len(signals), 1)
+    profile = P.blank("林静")
+    eq("新增一条线索", P.add_portrait_signals(profile, signals), 1)
+    eq("重复线索不叠加", P.add_portrait_signals(profile, signals), 0)
+
+    class FakeModel:
+        def call_model(self, cfg, key, image, prompt, cancel_event=None, system=None):
+            ids = re.findall(r'"id":\s*"([^"]+)"', prompt)
+            return json.dumps({"overview": "交流时常先确定安排", "traits": [
+                {"axis": "表达方式", "text": "先明确时间再推进话题",
+                 "signal_ids": ids[:1]}], "reply_tips": ["先给出时间选项"]},
+                ensure_ascii=False), None
+
+    portrait = P.synthesize_portrait(FakeModel(), {}, "", profile["portrait_sources"])
+    eq("形成整体特征", len(portrait["traits"]), 1)
+    eq("能回指线索", portrait["traits"][0]["signal_ids"], ["sig-0001"])
+    profile["portrait"] = portrait
+    P._append(profile, {"kind": "关系事实", "text": "旧的逐条事实",
+                        "evidence": [{"quote": "先把时间定下来", "at": "2026-09-01"}]})
+    hint, used, total = P.hint_stats(profile, context=["对方: 什么时候见"])
+    check("回复优先用整体画像", "先明确时间再推进话题" in hint)
+    check("不再喂旧观察列表", "旧的逐条事实" not in hint)
+    check("不把逐字原话塞进短卡", "先把时间定下来" not in hint)
+    eq("卡片特征数", (used, total), (1, 1))
+
+
+def test_extract_portrait_signal_without_fact():
+    print("\n[只有沟通线索也能形成画像输入]")
+    class FakeModel:
+        def call_model(self, cfg, key, image, prompt, cancel_event=None, system=None):
+            return json.dumps({"observations": [], "signals": [
+                {"axis": "表达方式", "text": "这次先确认时间", "quote": "先把时间定下来",
+                 "at": "2026-09-01"},
+                {"axis": "表达方式", "text": "不能收用户的话", "quote": "我不想见"}]},
+                ensure_ascii=False), None
+
+    obs, stats = P.extract(FakeModel(), {}, "", "林静: 先把时间定下来\n我: 我不想见", "林静")
+    eq("无事实观察", obs, [])
+    eq("有效画像线索仍保留", len(stats["signals"]), 1)
+
+
+def test_portrait_hierarchical_summary():
+    print("\n[长记录：分组归纳整体画像]")
+    sources = [{"id": "sig-%04d" % i, "axis": "表达方式",
+                "text": "这段先确定时间后讨论具体安排" * 3,
+                "quote": "先确认下具体时间", "at": "2026-09-01"}
+               for i in range(1, 100)]
+    calls = []
+
+    class FakeModel:
+        def call_model(self, cfg, key, image, prompt, cancel_event=None, system=None):
+            ids = re.findall(r'"id":\s*"([^"]+)"', prompt)
+            calls.append(ids)
+            return json.dumps({"overview": "先确认安排", "traits": [
+                {"axis": "表达方式", "text": "先确定时间再谈安排",
+                 "signal_ids": ids[:1]}], "reply_tips": ["先说时间"]},
+                ensure_ascii=False), None
+
+    portrait = P.synthesize_portrait(FakeModel(), {}, "", sources)
+    check("长输入先分组再合成", len(calls) >= 3)
+    check("最终引用仍指向原始线索", portrait["traits"][0]["signal_ids"][0].startswith("sig-"))
+
+
+def test_portrait_json_retry():
+    print("\n[整体画像 JSON 异常重试]")
+    calls = []
+    class FakeModel:
+        def call_model(self, cfg, key, image, prompt, cancel_event=None, system=None):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return '{"traits":[', None
+            return ('{"traits":[{"axis":"表达方式","text":"先问时间",'
+                    '"signal_ids":["sig-0001"]}],"reply_tips":[]}'), None
+    sources = [{"id": "sig-0001", "axis": "表达方式", "text": "先问时间",
+                "quote": "几点见", "at": "2026-09-01"}]
+    result = P.synthesize_portrait(FakeModel(), {}, "", sources)
+    eq("格式坏时只重试一次", len(calls), 2)
+    eq("重试后得到特征", result["traits"][0]["text"], "先问时间")
 
 
 def test_speaker_short_paste():
@@ -531,6 +647,10 @@ def test_filter_leaked_by_batch():
        P.filter_leaked(["【关于「对方」的背景】x", "在的"]), ["在的"])
     eq("只有一条类别行、其余正常 → 全留（不成块）",
        len(P.filter_leaked(["关系事实：我确认了", "在的", "行"])), 3)
+    eq("新整体画像表头不能变成回复卡片",
+       P.filter_leaked(["对方沟通画像：先问时间", "在的"]), ["在的"])
+    eq("新画像整批回吐会被滤掉",
+       P.filter_leaked(["表达方式：先问时间", "思考与决策：先看安排"]), [])
 
 
 def test_apply_to_prompt_sanitized():
@@ -591,6 +711,14 @@ def test_json_parse():
     eq("纯 JSON", P._parse_json('{"a":1}'), {"a": 1})
     eq("带代码围栏", P._parse_json('```json\n{"a":1}\n```'), {"a": 1})
     eq("前后有废话", P._parse_json('好的，结果：{"a":1} 以上'), {"a": 1})
+    eq("数组 JSON", P._parse_json('```json\n[{"kind":"时间线"}]\n```'),
+       [{"kind": "时间线"}])
+    try:
+        P._parse_json('{"observations":[{"kind":"时间线"}')
+    except ValueError:
+        check("截断的外层对象不能只取内层一条", True)
+    else:
+        check("截断的外层对象不能只取内层一条", False)
     try:
         P._parse_json("完全没有 JSON")
         check("无 JSON 时抛错", False)
@@ -756,9 +884,98 @@ def test_known_contacts():
 def test_blacklist_roundtrip():
     print("\n[黑名单往返]")
     P.reject("测试人", "不想留的条目")
-    check("写进去", "不想留的条目" in P.rejected_list())
+    check("写进去", "不想留的条目" in P.rejected_list("测试人"))
     P.reject("测试人", "不想留的条目")
-    eq("重复写不叠加", P.rejected_list().count("不想留的条目"), 1)
+    eq("重复写不叠加", P.rejected_list("测试人").count("不想留的条目"), 1)
+    eq("不会误伤另一个人", P.rejected_list("另一人"), [])
+
+
+def test_undo_import():
+    print("\n[撤销导入恢复旧版，首次导入可撤销]")
+    fresh = P.blank("撤销全新")
+    P._append(fresh, {"kind": "关系事实", "text": "喜欢看展",
+                      "evidence": [{"quote": "喜欢看展", "at": "2026-09-23"}]})
+    check("首次导入保存", P.save(fresh, snapshot=True))
+    check("首次导入撤销可用", P.can_undo("撤销全新"))
+    check("首次导入撤销", P.undo("撤销全新"))
+    eq("首次导入后没有画像", P.load("撤销全新"), None)
+
+    prof = P.blank("撤销已有")
+    P._append(prof, {"kind": "关系事实", "text": "做建材",
+                     "evidence": [{"quote": "做建材", "at": "2026-09-23"}]})
+    check("初版保存", P.save(prof))
+    P._append(prof, {"kind": "关系事实", "text": "喜欢看展",
+                     "evidence": [{"quote": "喜欢看展", "at": "2026-09-23"}]})
+    check("更新保存", P.save(prof, snapshot=True))
+    eq("更新后两条", len(P.load("撤销已有")["observations"]), 2)
+    check("撤销更新", P.undo("撤销已有"))
+    eq("撤销后只有旧条目", len(P.load("撤销已有")["observations"]), 1)
+
+
+def test_merge_ids_unique():
+    print("\n[合并后 ID 唯一]")
+    def person(name, text):
+        p = P.blank(name)
+        P._append(p, {"kind": "关系事实", "text": text,
+                      "evidence": [{"quote": text, "at": "2026-09-23"}]})
+        check("初版保存 " + name, P.save(p))
+    person("合并编号目标", "做建材")
+    person("合并编号来源", "喜欢看展")
+    P.merge_contact("合并编号目标", "合并编号来源")
+    merged = P.load("合并编号目标")
+    ids = [o["id"] for o in merged["observations"]]
+    eq("合并后 ID 唯一", len(set(ids)), 2)
+    eq("合并后导入撤销不可用", P.can_undo("合并编号目标"), False)
+    eq("合并不能被误当作导入撤销", P.undo("合并编号目标"), False)
+    eq("误触撤销后合并仍完整", len(P.load("合并编号目标")["observations"]), 2)
+    P.drop_observation(merged, ids[0])
+    eq("删一条只剩另一条", len(merged["observations"]), 1)
+
+    again = P.load("合并编号目标")
+    P._append(again, {"kind": "关系事实", "text": "下周出差",
+                      "evidence": [{"quote": "下周出差", "at": "2026-09-23"}]})
+    check("合并后新导入可保存", P.save(again, snapshot=True))
+    check("新导入后撤销恢复可用", P.can_undo("合并编号目标"))
+    check("合并后新导入可撤销", P.undo("合并编号目标"))
+    eq("撤销回到合并后状态", len(P.load("合并编号目标")["observations"]), 2)
+
+
+def test_archive_and_restore_contact():
+    print("\n[整份画像删除与恢复]")
+    name = "待删除联系人"
+    prof = P.blank(name)
+    P._append(prof, {"kind": "关系事实", "text": "喜欢看展",
+                     "evidence": [{"quote": "喜欢看展", "at": "2026-09-23"}]})
+    check("初始画像保存", P.save(prof, snapshot=True))
+    archive = P.archive_contact(name)
+    check("归档文件存在", bool(archive) and os.path.isfile(archive))
+    eq("已从可用画像中移除", P.load(name), None)
+    check("联系人列表不再显示", name not in P.known_contacts())
+    eq("删除屏障不会被当成导入撤销", P.can_undo(name), False)
+    eq("撤销导入不能复活已删除画像", P.undo(name), False)
+    eq("可以恢复", P.restore_archived_contact(archive), name)
+    eq("恢复后原条目仍在", len(P.load(name)["observations"]), 1)
+    check("归档文件已移回", not os.path.exists(archive))
+
+    again = P.archive_contact(name)
+    replacement = P.blank(name)
+    P._append(replacement, {"kind": "关系事实", "text": "这是新画像",
+                            "evidence": [{"quote": "这是新画像", "at": "2026-09-23"}]})
+    check("同名新画像可创建", P.save(replacement))
+    eq("恢复不得覆盖同名新画像", P.restore_archived_contact(again), None)
+    eq("新画像未被覆盖", P.load(name)["observations"][0]["text"], "这是新画像")
+    check("未恢复的归档仍在", os.path.isfile(again))
+
+
+def test_legacy_rejections_preserved():
+    print("\n[旧全局拒绝列表保留但不误伤]")
+    import json
+    with open(P.REJECTED_PATH, "w", encoding="utf-8") as f:
+        json.dump(["旧条目"], f)
+    eq("旧条目不误伤新联系人", P.rejected_list("新联系人"), [])
+    check("新条目写入", P.reject("新联系人", "新拒绝"))
+    eq("旧记录仍在文件", P._rejected_store().get("_legacy_unassigned"), ["旧条目"])
+    eq("新条目只对本人有效", P.rejected_list("新联系人"), ["新拒绝"])
 
 
 def test_no_leftover_dead_code():
@@ -773,11 +990,49 @@ def test_no_leftover_dead_code():
     eq("类别数 5", len(P.KINDS), 5)
 
 
+def test_import_checkpoint_and_auto_update():
+    print("\n[断点校验与主动读屏增量学习]")
+    name = "断点测试联系人"
+    source = "**12:00 | 我：** hi\n**12:01 | 断点测试联系人：** 好的"
+    path = P.import_checkpoint_path(name, source)
+    base = P.profile_disk_hash(name)
+    state = {"contact_key": P.core.contact_key(name), "base_hash": base,
+             "total": 2, "next_index": 1, "before": 0,
+             "profile": P.blank(name), "stats": {}, "signals": [],
+             "fallback_signals": [], "counts": [0, 0, 0, 0]}
+    P.save_import_checkpoint(path, state)
+    check("匹配文件可续跑", P.load_import_checkpoint(path, name, base, 2) is not None)
+    check("内容改变不共享断点", P.import_checkpoint_path(name, source + "x") != path)
+    check("基线改变拒绝旧断点", P.load_import_checkpoint(path, name, "changed", 2) is None)
+    check("存在断点时检测到", P.has_import_checkpoint(name))
+    os.unlink(path)
+
+    prof = P.blank(name)
+    P.add_portrait_signals(prof, [{"axis": "表达方式", "text": "说得简短",
+                                   "quote": "好的", "at": ""}])
+    prof["portrait"] = {"overview": "简短", "traits": [{"axis": "表达方式",
+                       "text": "说得简短", "signal_ids": ["sig-0001"]}], "reply_tips": []}
+    P.save(prof)
+    new = {"axis": "互动习惯", "text": "倾向于确认时间", "quote": "几点见", "at": ""}
+    messages = ["我: 什么时候有空", name + ": 几点见", "我: 明天", name + ": 可以的"]
+    with patch.object(P, "extract", return_value=([], {"signals": [new]})) as extraction, \
+         patch.object(P, "synthesize_portrait", return_value=prof["portrait"]):
+        eq("主动读屏新增线索", P.update_portrait_from_chat(None, {}, "", name, messages), 1)
+        eq("重复线索不再调用归纳", P.update_portrait_from_chat(None, {}, "", name, messages), 0)
+        eq("提取次数", extraction.call_count, 2)
+    eq("新增线索已保存", len(P.load(name)["portrait_sources"]), 2)
+
+
 def main():
     print("profile.py 回归测试（临时目录：%s）" % _TMP)
     try:
         test_norm()
         test_speaker_basic()
+        test_markdown_chat_chunks()
+        test_whole_portrait()
+        test_extract_portrait_signal_without_fact()
+        test_portrait_hierarchical_summary()
+        test_portrait_json_retry()
         test_speaker_short_paste()
         test_speaker_short_nickname()
         test_speaker_spaced_contact()
@@ -820,7 +1075,12 @@ def main():
         test_alias_follows_merge()
         test_known_contacts()
         test_blacklist_roundtrip()
+        test_undo_import()
+        test_merge_ids_unique()
+        test_archive_and_restore_contact()
+        test_legacy_rejections_preserved()
         test_no_leftover_dead_code()
+        test_import_checkpoint_and_auto_update()
     finally:
         shutil.rmtree(_TMP, ignore_errors=True)
 
