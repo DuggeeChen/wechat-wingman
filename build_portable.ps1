@@ -23,15 +23,16 @@ if ((Test-Path -LiteralPath $PackageTarget) -or (Test-Path -LiteralPath $ZipPath
 
 & $PythonExe -m PyInstaller --version | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller is not installed for the active Python" }
-& $PythonExe -m PyInstaller --noconfirm --clean `
-    --onedir --windowed --name "WeChatStrategist" `
-    --icon (Join-Path $ProjectRoot "assets\wingman.ico") `
-    --add-data ((Join-Path $ProjectRoot "assets") + ";assets") `
-    --add-data ((Join-Path $ProjectRoot "config.example.json") + ";.") `
-    --add-data ((Join-Path $ProjectRoot "LICENSE") + ";.") `
-    --add-data ((Join-Path $ProjectRoot "README.zh-CN.md") + ";.") `
-    --workpath $BuildRoot --distpath $DistRoot `
-    (Join-Path $ProjectRoot "wx_helper.py")
+Push-Location -LiteralPath $ProjectRoot
+try {
+    # Build the maintained relative-path spec; do not regenerate a spec containing
+    # the developer's absolute source paths or modify tracked files during builds.
+    & $PythonExe -m PyInstaller --noconfirm --clean `
+        --workpath $BuildRoot --distpath $DistRoot `
+        (Join-Path $ProjectRoot 'WeChatStrategist.spec')
+} finally {
+    Pop-Location
+}
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
 $PackageSource = Join-Path $DistRoot "WeChatStrategist"

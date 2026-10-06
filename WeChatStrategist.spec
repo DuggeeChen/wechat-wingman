@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/wx_helper.py'],
+    ['wx_helper.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/assets', 'assets'), ('C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/config.example.json', '.'), ('C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/LICENSE', '.'), ('C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/README.zh-CN.md', '.')],
+    datas=[('assets', 'assets'), ('config.example.json', '.'), ('LICENSE', '.'), ('README.zh-CN.md', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:/Users/Administrator.DESKTOP-FMFEI6G/Documents/Codex/2026-10-05/zhuo/work/github-v26/assets/wingman.ico'],
+    icon=['assets/wingman.ico'],
 )
 coll = COLLECT(
     exe,
