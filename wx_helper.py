@@ -554,7 +554,7 @@ def _bounded_post(url, headers, payload, timeout, deadline, cancel_event, on_del
             if response.status_code == 200:
                 if "text/event-stream" in response.headers.get("Content-Type", ""):
                     timings["mode"] = "sse"
-                    parts, finished, size = [], False, 0
+                    parts, finished, size, finish_reason = [], False, 0, None
                     # Avoid requests' default 512-byte buffer holding a completed
                     # short candidate until a later event arrives.
                     for raw in response.iter_lines(chunk_size=1):
@@ -571,7 +571,8 @@ def _bounded_post(url, headers, payload, timeout, deadline, cancel_event, on_del
                         line = raw[5:].strip().decode("utf-8")
                         if line == "[DONE]":
                             finished = True
-                            data = {"choices": [{"message": {"content": "".join(parts)}}]}
+                            data = {"choices": [{"message": {"content": "".join(parts)},
+                                                 "finish_reason": finish_reason}]}
                             result.put((response.status_code, data, None))
                             published = True
                             continue
@@ -595,9 +596,11 @@ def _bounded_post(url, headers, payload, timeout, deadline, cancel_event, on_del
                                 deltas.put(part)
                         if choice.get("finish_reason"):
                             finished = True
+                            finish_reason = choice["finish_reason"]
                     if not finished:
                         raise ValueError("incomplete stream response")
-                    data = {"choices": [{"message": {"content": "".join(parts)}}]}
+                    data = {"choices": [{"message": {"content": "".join(parts)},
+                                         "finish_reason": finish_reason}]}
                 else:
                     timings["mode"] = "json"
                     data = response.json()
@@ -639,6 +642,21 @@ def _bounded_post(url, headers, payload, timeout, deadline, cancel_event, on_del
             pass
 
 
+class ModelOutputError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _deepseek_structured(cfg, model, stage):
+    # Provider-specific parameters must never leak to a custom proxy/provider.
+    base = urlsplit(cfg.get("api_base", ""))
+    return (base.scheme == "https" and base.netloc.lower() == "api.deepseek.com"
+            and base.path.rstrip("/") in ("", "/v1") and not base.query and not base.fragment
+            and model in ("deepseek-flash", "deepseek-v4-pro")
+            and stage in ("capture", "generate", "check"))
+
+
 def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=None,
                on_delta=None, stage=None):
     """One bounded request chain. Progress is delivered on the caller thread.
@@ -670,11 +688,23 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
     if deadline is None:
         deadline = time.monotonic() + 60
     started = time.monotonic()
+    recovered = False
+    original_system = payload["messages"][0]["content"]
     stage_name = {"capture": "识别", "generate": "生成", "check": "检查"}.get(stage, "请求")
     for mi, mname in enumerate(chain):
         if cancel_event is not None and cancel_event.is_set():
             return "", "已取消"
         payload["model"] = mname
+        structured = _deepseek_structured(cfg, mname, stage)
+        payload.pop("thinking", None)
+        payload.pop("response_format", None)
+        if structured:
+            payload["response_format"] = {"type": "json_object"}
+            payload["messages"][0]["content"] = original_system + " 只输出一个完整 JSON 对象。"
+            if stage == "capture":
+                payload["thinking"] = {"type": "disabled"}
+        else:
+            payload["messages"][0]["content"] = original_system
         remaining = deadline - time.monotonic()
         if remaining <= 2:
             return "", "请求超时，请稍后重试"
@@ -703,12 +733,31 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
             if cancel_event is not None and cancel_event.is_set():
                 return "", "已取消"
             if status_code == 200:
-                if mi:
-                    log("已改用备用模型 %s" % mname)
-                log("模型请求完成: elapsed=%.1fs" % (time.monotonic()-started))
-                content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                content = choice["message"].get("content")
+                finish = choice.get("finish_reason")
+                # Log only bounded categories and lengths, never chat or thinking.
+                safe_finish = finish if finish in (None, "stop", "length", "content_filter", "tool_calls",
+                                                   "insufficient_system_resource", "aborted") else "unknown"
+                log("阶段=%s finish=%s content_chars=%d" %
+                    (stage_name, safe_finish or "unspecified", len(content) if isinstance(content, str) else 0))
+                if finish == "length":
+                    raise ModelOutputError("length", "模型输出达到上限，结果被截断；已读消息保留，请重试当前步骤")
+                if finish not in (None, "stop"):
+                    return "", "模型未完成本次输出（%s）；已读消息保留，请重试当前步骤" % safe_finish
+                if content is None or (isinstance(content, str) and not content.strip()):
+                    raise ModelOutputError("empty", "模型没有返回可用正文；已读消息保留，请重试当前步骤")
                 if not isinstance(content, str):
                     raise ValueError("invalid content")
+                if stage == "capture":
+                    from buddy_context import unpack_json
+                    try:
+                        unpack_json(content)
+                    except ValueError:
+                        raise ModelOutputError("invalid_json", "截图识别返回的 JSON 不完整；已读消息保留，请重试读取") from None
+                if mname != cfg["model"]:
+                    log("已改用备用模型 %s" % mname)
+                log("模型请求完成: elapsed=%.1fs" % (time.monotonic()-started))
                 return content, None
             log("模型请求失败: HTTP %s 模型=%s" % (status_code, mname))
             if status_code in (401, 403):
@@ -721,6 +770,15 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
                 last = "请求格式或模型不兼容（HTTP 400）"
             else:
                 last = "服务暂时不可用（HTTP %s）" % status_code
+        except ModelOutputError as exc:
+            last = str(exc)
+            log("阶段=%s output_error=%s" % (stage_name, exc.code))
+            # One recovery for official DeepSeek recognition only, within the
+            # original deadline, using exactly the same in-memory screenshot.
+            if structured and stage == "capture" and not recovered and time.monotonic()+2 < deadline:
+                recovered = True
+                chain.insert(mi+1, mname)
+                log("阶段=识别 自动恢复=1 原因=%s" % exc.code)
         except requests.ConnectTimeout:
             last = "连接服务超时，请检查网络或接口地址"
             log("连接超时 elapsed=%.1fs" % (time.monotonic()-started))

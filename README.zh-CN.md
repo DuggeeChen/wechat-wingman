@@ -7,7 +7,7 @@
 [English](README.md) · [Windows 便携版](https://github.com/DuggeeChen/wechat-wingman/releases/latest) · [版本记录](CHANGELOG.md) · [隐私说明](docs/PRIVACY.md)
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Version](https://img.shields.io/badge/version-2.6.0-green)
+![Version](https://img.shields.io/badge/version-2.6.1-green)
 ![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)
 
 <p align="center"><img src="assets/ui.png" alt="虚构对话演示：回复优先、卡片编辑、身份纠正" width="440"></p>
@@ -55,6 +55,8 @@ python wx_helper.py
 新截图的一键流程通常有两次串行请求：**识别图片 → 生成文字回复**。完全未变化的画面可复用已接受的识别结果；纯文字重试无需重新截图。连接复用和提前显示完整候选改善等待体验，但不能消除供应商排队、处理和网络延迟。
 
 日志分别记录识别、生成及首条可用回复的耗时，不记录聊天正文或密钥。非流式 JSON 或字段顺序不同的接口仍可显示最终结果，但可能无法提前显示。
+
+v2.6.1 为 DeepSeek 官方 `deepseek-flash` / `deepseek-v4-pro` 启用 JSON 输出，截图识别明确关闭思考。空正文、截断或无效 JSON 最多自动恢复一次，仍共用识别阶段的 60 秒上限；正常成功不增加请求。自定义接口不附加这些供应商专用参数，回复生成的思考设置保持原样。
 
 ## 数据与兼容性
 

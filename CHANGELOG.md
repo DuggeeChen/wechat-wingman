@@ -1,5 +1,17 @@
 # 版本记录 / Changelog
 
+## v2.6.1
+
+修复读取截图时反复出现「模型返回格式不完整」的问题。
+
+- 对 DeepSeek 官方 `deepseek-flash` / `deepseek-v4-pro` 的主流程启用 JSON 输出；截图识别明确关闭思考，回复生成保留原有思考设置。
+- HTTP 200 不再等同于有效结果：保留流式结束原因，区分空正文、输出上限截断和服务端中断。
+- 官方 DeepSeek 截图识别遇到空正文、截断或无效 JSON 时，最多恢复一次，复用原截图并共用原 60 秒上限；正常成功不增加请求。
+- 读取结果兼容 BOM、大小写代码围栏和 JSON 前后说明；重复字段、多个对象和真正截断仍拒绝，身份与上下文校验保持有效。
+- 新增 16 项回归测试，主流程共 126 项通过。当前配置接口另用完全虚构画面实测，首次返回约 1.2 秒，双方身份及消息正确；该结果不代表真实画面的固定耗时。
+
+**Patch summary:** structured output and explicit non-thinking screenshot recognition for supported official DeepSeek models; preserve finish reasons, reject empty/truncated output, recover recognition once within its original deadline, and accept harmless JSON wrappers without guessing missing content. Custom endpoints keep their existing request parameters.
+
 ## v2.6.0
 
 本次公开发布汇总本地 2.0–2.6 迭代，将默认入口升级为以聊天上下文和身份校验为基础的桌面搭子。此前 GitHub 公开发行版为 v1.0.0；下面的 2.x 小版本是开发迭代记录，并非每项都有独立 GitHub Release。

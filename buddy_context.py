@@ -10,11 +10,21 @@ def uid():
 
 
 def unpack_json(text):
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip()).strip()
+    # Accept harmless wrappers, but never repair a truncated object or pick a
+    # nested object out of a broken response. Duplicate fields stay invalid.
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("模型没有返回可用正文，请重试；已读消息仍保留")
+    text = text.strip().lstrip("\ufeff").strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I).strip()
     try:
-        value = json.loads(text)
+        start = text.find("{")
+        if start < 0 or any(c in text[:start] for c in "[]}"):
+            raise ValueError("invalid object prefix")
+        value, end = json.JSONDecoder(object_pairs_hook=_unique_fields).raw_decode(text, start)
+        if any(c in text[end:] for c in "{}[]"):
+            raise ValueError("ambiguous object suffix")
     except (ValueError, TypeError):
-        raise ValueError("模型返回格式不完整，请重试；已读消息仍保留")
+        raise ValueError("模型返回的 JSON 不完整或含重复字段，请重试；已读消息仍保留") from None
     if not isinstance(value, dict):
         raise ValueError("模型返回的不是有效对象")
     return value

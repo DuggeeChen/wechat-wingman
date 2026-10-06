@@ -7,7 +7,7 @@ Read a WeChat conversation on demand and get editable reply suggestions using yo
 [中文](README.zh-CN.md) · [Windows download](https://github.com/DuggeeChen/wechat-wingman/releases/latest) · [Changelog](CHANGELOG.md) · [Privacy](docs/PRIVACY.md)
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Version](https://img.shields.io/badge/version-2.6.0-green)
+![Version](https://img.shields.io/badge/version-2.6.1-green)
 ![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)
 
 <p align="center"><img src="assets/ui.png" alt="Fictional conversation: reply-first cards and speaker correction" width="440"></p>
@@ -48,6 +48,8 @@ python wx_helper.py
 The protocol is `/chat/completions` with image input for recognition. Native Messages and Responses endpoints are not interchangeable. Use the built-in test to check compatibility.
 
 A fresh capture normally needs image recognition followed by text generation. Exact unchanged frames can reuse accepted recognition; generation retries are text-only. Pooled connections and early complete-candidate display reduce waiting but cannot eliminate provider or network latency. Non-streaming JSON still works without early display.
+
+For official DeepSeek `deepseek-flash` / `deepseek-v4-pro`, v2.6.1 requests JSON output and explicitly disables thinking for screenshot recognition. Empty, truncated or malformed recognition output can recover once within the same 60-second stage budget; successful calls do not add requests. Custom endpoints retain their existing parameters, and reply-generation thinking preferences are preserved.
 
 Stage timings are logged without chat text or keys. Session messages/background stay in RAM for one run. The main workflow does not save screenshots; its cache stores only the last frame's fingerprint. Logs rotate at about 1 MB. Resetting recognition cache causes the next capture to be recognized again.
 

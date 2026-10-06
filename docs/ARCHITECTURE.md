@@ -1,4 +1,4 @@
-# Architecture — v2.6.0
+# Architecture — v2.6.1
 
 `BuddyApp` is the default Tk entry. It uses `wx_helper` for Win32 capture and bounded HTTP, and inherits shared window infrastructure from `wx_ui.ReplyApp`, overriding its legacy reply pipeline.
 
@@ -39,8 +39,12 @@ Prompt context is bounded to 100 messages and approximately 24,000 text characte
 
 New captures normally require two sequential requests with separate 60-second stage budgets. Concurrency is limited to two workers; leased HTTP sessions are not shared concurrently. Fallbacks use the same endpoint and remaining stage budget. Cancellation suppresses stale UI events rather than claiming to stop remote computation.
 
+For exact official DeepSeek endpoints (root or `/v1`) and the supported Flash/Pro model IDs, main-workflow requests enable JSON output. Recognition explicitly disables thinking; generation keeps its configured preference. Empty final content, `length` finishes and malformed capture JSON can recover once with the same image/prompt and original deadline. Authentication, filtering, cancellation and ordinary provider errors do not trigger this recovery. Other endpoints and legacy requests receive no new provider-specific parameters.
+
 SSE content deltas, not reasoning, enter the collector. Complete candidate objects are published after the question field arrives. Copy is enabled; editing waits for completion. Fallback resets previews. Malformed, interrupted or inconsistent final results remove previews and prompt review of already copied text. JSON-only responses retain the full-result path.
 
 Logs distinguish local preparation, API completion, parsing and first usable reply. Header time includes both network and server wait, not just connection time. The image cache holds one fingerprint/session ID, not image pixels. Capture and HTTP image data exist only as temporary worker memory.
+
+Transport preserves SSE finish reasons. Diagnostics record safe finish categories, content lengths and error categories, never response text or reasoning. Complete capture/check objects may have harmless wrappers; the parser never selects a nested object from a broken outer object, repairs truncation or accepts duplicate fields.
 
 Tests cover identities, contact isolation, gaps, stale/cancelled events, connection reuse, synthetic SSE, settings, inline edits and cleanup boundaries without real model calls.
