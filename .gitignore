@@ -28,3 +28,10 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local upgrades and build output
+.upgrades/
+build/
+dist/
+portable-output/
+*.spec.bak

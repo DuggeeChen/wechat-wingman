@@ -1,4 +1,4 @@
-"""微信军师桌面界面。聊天与回复只在本次运行内存中保留。"""
+"""桌面搭子桌面界面。聊天与回复只在本次运行内存中保留。"""
 import copy
 import hashlib
 import ctypes
@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import profile as P
+import jev_advisor as J
 import wx_helper as core
 from ui_theme import (AMBER, BG, BODY, FONT, GREEN, HEAD, INK, LINE, MUTED, PALE,
                       RED, SMALL, TITLE, WHITE, Panel, make_button, make_label)
@@ -133,8 +134,8 @@ class ReplyApp:
         self.root = tk.Tk()
         if testing:
             self.root.withdraw()
-        self.root.title("微信军师")
-        icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "wingman.ico")
+        self.root.title(core.APP_NAME)
+        icon = os.path.join(core.RESOURCE_DIR, "assets", "wingman.ico")
         if os.path.exists(icon):
             try:
                 self.root.iconbitmap(default=icon)
@@ -142,12 +143,24 @@ class ReplyApp:
                 pass  # non-Windows, or an unreadable .ico; purely cosmetic
         self.root.configure(bg=BG)
         self.root.minsize(480, 620)
+        # 启动锁：没解锁之前不露主窗口，只露密码框。取消 = 什么都不建，直接收工。
+        # testing 下必须跳过 —— scripts/test_ui.py 是以 testing=True 直接构造这个类的。
+        self.cancelled = False
+        if not testing and core.lock_enabled(cfg):
+            self.root.withdraw()
+            if not self.ask_lock():
+                self.cancelled = True
+                self.root.destroy()
+                return
+            self.root.deiconify()
         self.q = queue.Queue()
         self.epoch = 0
         self.busy = False
         self.cancel_event = None
         self.context = None
         self.cards = []
+        self.jev_advice = None
+        self.advice_expanded = False
         self.card_labels = []
         self.feedback = {}
         self.card_buttons = []
@@ -159,7 +172,7 @@ class ReplyApp:
         self.portrait_seen = set()
         self.portrait_lock = threading.Lock()
         self.portrait_cancel = threading.Event()
-        self.state_path = os.path.join(core.HERE, "ui_state.json")
+        self.state_path = os.path.join(getattr(core, "DATA_DIR", core.HERE), "ui_state.json")
         self.ui_state = self.read_ui_state()
         self.goal = tk.StringVar()
         self.persona = tk.StringVar(value=cfg["default_persona"])
@@ -200,7 +213,7 @@ class ReplyApp:
     def build(self):
         head = tk.Frame(self.root, bg=BG)
         head.pack(fill="x", padx=20, pady=(18, 12))
-        self.label(head, "微信军师", font=TITLE).pack(side="left")
+        self.label(head, core.APP_NAME, font=TITLE).pack(side="left")
         self.style_button = self.button(head, "风格库", self.open_styles, small=True)
         self.style_button.pack(side="right")
         tk.Checkbutton(head, text="置顶", variable=self.topmost, command=self.toggle_topmost,
@@ -287,8 +300,10 @@ class ReplyApp:
         reply_head.pack(fill="x", padx=2, pady=(0, 10))
         self.label(reply_head, "回复建议", font=("Microsoft YaHei UI", 12, "bold")).pack(side="left")
         self.label(reply_head, "点击正文复制 · 支持编辑微调", MUTED, SMALL).pack(side="right")
+        self.advice_box = tk.Frame(self.body, bg=BG)
         self.card_box = tk.Frame(self.body, bg=BG)
         self.card_box.pack(fill="x")
+        self.render_advice()
         self.render_cards()
 
     def resize_content(self, event):
@@ -322,6 +337,10 @@ class ReplyApp:
             row = tk.Frame(panel.body, bg=WHITE)
             row.pack(fill="x")
             self.label(row, card["label"], GREEN, ("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+            if (self.jev_advice
+                    and self.jev_advice.get("recommended_index") == i):
+                self.label(row, "Jev 推荐", AMBER, ("Microsoft YaHei UI", 9, "bold")).pack(
+                    side="left", padx=(8, 0))
             marker = self.label(row, "正在微调…" if self.refining == i else "点击正文复制", MUTED, SMALL)
             marker.pack(side="right")
             self.feedback[i] = marker
@@ -343,6 +362,84 @@ class ReplyApp:
                 button.configure(state="disabled" if self.busy else "normal")
                 self.card_buttons.append(button)
 
+    def render_advice(self):
+        for child in self.advice_box.winfo_children():
+            child.destroy()
+        self.advice_box.pack_forget()
+        advice = self.jev_advice
+        if not advice:
+            return
+        panel = Panel(self.advice_box)
+        panel.pack(fill="x")
+        head = tk.Frame(panel.body, bg=WHITE)
+        head.pack(fill="x")
+        self.label(head, "Jev 提示", AMBER,
+                   ("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        if advice.get("unavailable"):
+            summary = advice["unavailable"] + "；回复候选不受影响"
+        else:
+            self.button(head, "收起" if self.advice_expanded else "展开详情",
+                        self.toggle_advice_details, small=True).pack(side="right")
+            chips = []
+            intent = advice.get("intent")
+            if intent and intent != "意图暂不明确":
+                chips.append("可能诉求：" + intent)
+            emotion = advice.get("emotion")
+            risk = advice.get("conflict_risk")
+            if emotion and emotion != "不明确":
+                label = "情绪：" + emotion
+                if risk in ("中", "高"):
+                    label += "（冲突风险%s）" % risk
+                chips.append(label)
+            elif risk:
+                chips.append("冲突风险：" + risk)
+            timing = advice.get("timing")
+            if timing and timing != "时机不明确":
+                chips.append("时机：" + timing)
+            summary = " · ".join(chips[:3]) or "当前判断不够稳定，暂不展示对话标签"
+            index = advice.get("recommended_index")
+            if index is None:
+                recommendation = "选项差异不明显，暂不推荐具体回复"
+            elif 0 <= index < len(self.cards):
+                probability = float(advice.get("recommendation_probability", 0.0) or 0.0)
+                recommendation = "推荐「%s」（匹配度 %.0f%%）" % (
+                    self.cards[index]["label"], probability * 100)
+            else:
+                recommendation = "暂不推荐具体回复"
+        self.label(panel.body, summary, MUTED, SMALL,
+                   wraplength=max(180, self.canvas.winfo_width()-42)).pack(fill="x", pady=(7, 0))
+        if not advice.get("unavailable"):
+            self.label(panel.body, recommendation, GREEN, SMALL,
+                       wraplength=max(180, self.canvas.winfo_width()-42)).pack(fill="x", pady=(5, 0))
+            if advice.get("duplicate_warning"):
+                warning = tk.Frame(panel.body, bg=WHITE)
+                warning.pack(fill="x", pady=(7, 0))
+                self.label(warning, "⚠ 三条候选表达角度较接近", AMBER, SMALL).pack(side="left")
+                self.button(warning, "换一批", lambda: self.start("batch"), small=True).pack(side="right")
+            if self.advice_expanded:
+                details = [
+                    "冲突风险：%s" % (advice.get("conflict_risk") or "未稳定"),
+                    "画像相关性：%s" % (advice.get("profile_relevance") or "未稳定"),
+                    "候选差异：%s" % (advice.get("candidate_diversity") or "未稳定"),
+                ]
+                self.label(panel.body, "判断详情 · " + " · ".join(details), MUTED, SMALL,
+                           wraplength=max(180, self.canvas.winfo_width()-42)).pack(fill="x", pady=(7, 0))
+                confidence = [
+                    ("诉求", advice.get("intent_confidence")),
+                    ("情绪", advice.get("emotion_confidence")),
+                    ("时机", advice.get("timing_confidence")),
+                ]
+                confidence = ["%s %.0f%%" % (name, float(value) * 100)
+                              for name, value in confidence if value is not None]
+                if confidence:
+                    self.label(panel.body, "判断置信度 · " + " · ".join(confidence), MUTED, SMALL,
+                               wraplength=max(180, self.canvas.winfo_width()-42)).pack(fill="x", pady=(5, 0))
+        self.advice_box.pack(fill="x", pady=(0, 10), before=self.card_box)
+
+    def toggle_advice_details(self):
+        self.advice_expanded = not self.advice_expanded
+        self.render_advice()
+
     def copy_card(self, index):
         self.root.clipboard_clear()
         self.root.clipboard_append(self.cards[index]["text"])
@@ -360,6 +457,66 @@ class ReplyApp:
         top.grab_set()
         return top
 
+    def ask_lock(self):
+        """启动密码框。只在启动时问一次；解锁后最小化/恢复都不再问。
+
+        输错**不限次数、不退出**：这是自家桌上的门帘，不是防爆破的登录页。
+        关掉窗口 = 放弃启动，返回 False，调用方什么也不建。
+        """
+        top = tk.Toplevel(self.root)
+        top.title(core.APP_NAME)
+        top.configure(bg=BG)
+        top.resizable(False, False)
+        top.attributes("-topmost", True)
+        icon = os.path.join(self.core.RESOURCE_DIR, "assets", "wingman.ico")
+        if os.path.exists(icon):
+            try:
+                top.iconbitmap(default=icon)
+            except tk.TclError:
+                pass
+        box = tk.Frame(top, bg=BG)
+        box.pack(fill="both", expand=True, padx=28, pady=24)
+        self.label(box, core.APP_NAME, INK, TITLE).pack(anchor="w")
+        self.label(box, "输入启动密码", MUTED, SMALL).pack(anchor="w", pady=(4, 12))
+        var = tk.StringVar()
+        entry = tk.Entry(box, textvariable=var, show="●", font=BODY, bg=WHITE, fg=INK,
+                         insertbackground=GREEN, relief="flat", bd=8, width=24)
+        entry.pack(fill="x")
+        hint = self.label(box, "", RED, SMALL)
+        hint.pack(anchor="w", pady=(8, 0))
+        result = {"ok": False}
+
+        def submit(_event=None):
+            if core.check_lock_password(self.cfg, var.get()):
+                result["ok"] = True
+                top.destroy()
+                return
+            hint.configure(text="密码不对，再试一次")
+            var.set("")
+            entry.focus_set()
+
+        def give_up(_event=None):
+            top.destroy()
+
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill="x", pady=(16, 0))
+        self.button(row, "解锁", submit, primary=True).pack(side="left", fill="x", expand=True)
+        self.button(row, "退出", give_up).pack(side="left", padx=(8, 0))
+        entry.bind("<Return>", submit)
+        top.protocol("WM_DELETE_WINDOW", give_up)
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        x = (top.winfo_screenwidth() - w) // 2
+        y = (top.winfo_screenheight() - h) // 3
+        top.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        entry.focus_set()
+        try:
+            top.grab_set()
+        except tk.TclError:
+            pass
+        self.root.wait_window(top)
+        return result["ok"]
+
     def show_edit(self, index):
         if self.busy:
             self.set_status("请先完成或取消当前生成")
@@ -375,7 +532,10 @@ class ReplyApp:
             if not value:
                 return
             self.cards[index]["text"] = value
+            self.jev_advice = None
+            self.advice_expanded = False
             top.destroy()
+            self.render_advice()
             self.render_cards()
             if and_copy:
                 self.copy_card(index)
@@ -448,7 +608,11 @@ class ReplyApp:
                 self.cards = []
                 changed = True
             if changed:
+                self.jev_advice = None
+                self.advice_expanded = False
+                self.context.pop("jev_profile_relevance", None)
                 self.refresh_context()
+                self.render_advice()
                 self.render_cards()
                 self.set_status("已更新，点击“同内容换一批”生成")
             top.destroy()
@@ -471,6 +635,9 @@ class ReplyApp:
         meta = "已读 %d 条 · %s" % (len(r["messages"]), r["read_at"])
         if r.get("hint_used"):
             meta += " · 画像 %d 条" % r.get("hint_count", 0)
+            relevance = r.get("jev_profile_relevance")
+            if relevance in ("相关", "关联较弱", "不相关"):
+                meta += "·%s" % relevance
         self.meta.configure(text=meta)
         self.details.configure(state="normal" if not self.busy else "disabled")
         self.combo.configure(state="readonly" if not self.busy else "disabled")
@@ -518,9 +685,11 @@ class ReplyApp:
                    "context": copy.deepcopy(self.context), "cards": copy.deepcopy(self.cards),
                    "persona": self.persona.get(), "index": index, "instruction": instruction}
         if mode == "read":
-            self.context, self.cards = None, []
+            self.context, self.cards, self.jev_advice = None, [], None
+            self.advice_expanded = False
             self.persona.set(self.cfg["default_persona"])
             self.refresh_context()
+            self.render_advice()
             self.render_cards()
             self.canvas.yview_moveto(0)
         self.refining = index if mode == "refine" else None
@@ -637,6 +806,7 @@ class ReplyApp:
                 if not cards:
                     raise ValueError("模型没有返回有效候选，请重试")
                 emit("read", (result, cards))
+                self._emit_jev_advice(emit, event, cfg, result["messages"], cards, goal, hint)
             else:
                 context = payload["context"]
                 style = cfg["personas"].get(payload["persona"], cfg["personas"][cfg["default_persona"]])
@@ -656,6 +826,8 @@ class ReplyApp:
                     emit("hint", {"used": bool(ph["text"]), "count": ph["count"],
                                   "why": ph["why"], "state": ph["state"]})
                     emit("batch", cards)
+                    self._emit_jev_advice(emit, event, cfg, context["messages"], cards, goal,
+                                          ph["text"])
                 elif mode == "refine":
                     index = payload["index"]
                     # 改写是纯文本请求，画像顺手带上，零额外调用成本。
@@ -669,6 +841,22 @@ class ReplyApp:
             self.core.log("界面任务失败: %s" % type(e).__name__)
             emit("error", str(e) if isinstance(e, ValueError) else "处理失败，请重试或查看日志")
 
+    def _emit_jev_advice(self, emit, event, cfg, messages, cards, goal, profile_digest=""):
+        """Main replies are already emitted; Jev is optional and may fail independently."""
+        if not J.enabled(cfg) or event.is_set():
+            return
+        try:
+            advice = J.advise(cfg, messages, cards, goal, profile_digest,
+                              cancel_event=event)
+        except J.JevUnavailable as exc:
+            self.core.log("Jev 提示不可用: %s" % type(exc).__name__)
+            advice = {"unavailable": str(exc)}
+        except Exception as exc:
+            self.core.log("Jev 提示失败: %s" % type(exc).__name__)
+            advice = {"unavailable": "Jev 提示暂不可用"}
+        if advice:
+            emit("jev", advice)
+
     def handle_event(self, job, kind, value):
         if kind == "hotkey":
             self.start("read")
@@ -677,6 +865,14 @@ class ReplyApp:
             return
         if kind == "stage":
             self.set_status(value, GREEN)
+            return
+        if kind == "jev":
+            self.jev_advice = value
+            if self.context is not None and self.context.get("hint_used"):
+                self.context["jev_profile_relevance"] = value.get("profile_relevance")
+                self.refresh_context()
+            self.render_advice()
+            self.render_cards()
             return
         if kind == "portrait_update":
             if not self.busy and self.context and value["name"] == self.context.get("name"):
@@ -699,18 +895,27 @@ class ReplyApp:
             return
         if kind == "read":
             self.context, self.cards = value
+            self.jev_advice = None
+            self.advice_expanded = False
             self.persona.set(self.context["persona_name"])
         elif kind == "batch":
             self.cards = value
+            self.jev_advice = None
+            self.advice_expanded = False
+            if self.context is not None:
+                self.context.pop("jev_profile_relevance", None)
         elif kind == "refine":
             index, text = value
             if 0 <= index < len(self.cards):
                 self.cards[index]["text"] = text
+            self.jev_advice = None
+            self.advice_expanded = False
         self.refresh_context()
+        self.render_advice()
         self.render_cards()
         self.more_button.configure(state="normal" if self.context else "disabled")
         # 把「这次到底有没有用上画像」说清楚 —— 静默失效比报错更糟：
-        # 用户以为军师记得，其实没记住，还会照着错的背景去回。
+        # 用户以为搭子记得，其实没记住，还会照着错的背景去回。
         # 状态栏说「本次发生了什么」（一次性），meta 行说「当前是什么状态」（持久）。
         # 名字对不上时给出确认入口（「查看 / 纠正」弹窗里能改联系人名），
         # 因为主窗口没有别的地方能点 —— 只提示不给入口等于没提示。
@@ -781,6 +986,9 @@ class ReplyApp:
         self.epoch += 1
         self.refining = None
         self.set_busy(False)
+        self.jev_advice = None
+        self.advice_expanded = False
+        self.render_advice()
         self.render_cards()
         self.set_status("已取消后续处理，旧结果不会覆盖当前界面")
 
@@ -892,5 +1100,8 @@ class ReplyApp:
         self.root.destroy()
 
     def run(self):
+        if self.cancelled:          # 启动锁那关点了退出：窗口已经销毁，别再去 mainloop
+            self.core.log("启动锁未解锁，用户退出")
+            return
         self.core.log("新版回复卡片界面已启动")
         self.root.mainloop()

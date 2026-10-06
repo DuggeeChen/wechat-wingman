@@ -14,6 +14,7 @@
   · 背景块被模型吐回来时不能变成一张卡片
   · 一次读取的两轮请求共享同一个超时预算（否则最坏 45+45=90 秒）
 """
+import hashlib
 import os
 import queue
 import shutil
@@ -62,6 +63,36 @@ ZW = "​"          # 零宽空格：微信昵称里很常见，str.strip() 去�
 
 
 # ---------------------------------------------------------------- 名字归一
+def test_startup_lock():
+    print("\n[启动锁：密码校验 + testing 旁路]")
+    # 向后兼容：老 config.json 里没有这个字段，必须照样能启动
+    check("没有 lock_password 字段时不锁", not core.lock_enabled({}))
+    check("空串不锁", not core.lock_enabled({"lock_password": ""}))
+    check("只有空格不锁", not core.lock_enabled({"lock_password": "   "}))
+    check("填了密码就锁", core.lock_enabled({"lock_password": "3650"}))
+
+    cfg = {"lock_password": "3650"}
+    check("明文正确", core.check_lock_password(cfg, "3650"))
+    check("明文错误", not core.check_lock_password(cfg, "3651"))
+    check("空输入不通过", not core.check_lock_password(cfg, ""))
+    check("密码为空时一律通过（等于不锁）", core.check_lock_password({"lock_password": ""}, "随便"))
+
+    h = hashlib.sha256("3650".encode("utf-8")).hexdigest()
+    check("sha256 形式正确", core.check_lock_password({"lock_password": "sha256:" + h}, "3650"))
+    check("sha256 形式错误", not core.check_lock_password({"lock_password": "sha256:" + h}, "3651"))
+    check("大写 SHA256: 前缀也认", core.check_lock_password({"lock_password": "SHA256:" + h}, "3650"))
+
+    # testing=True 必须绕过密码框。test_ui.py 通篇以 testing=True 直接构造 ReplyApp，
+    # 这里要是弹了模态框，整个套件会卡死在等人输密码上。
+    locked_cfg = {"personas": {"默认": "口语化"}, "default_persona": "默认", "candidates": 3,
+                  "contact_personas": {}, "save_debug": False, "lock_password": "3650"}
+    app = wx_ui.ReplyApp(core, locked_cfg, "KEY", testing=True)
+    try:
+        check("testing=True 时带密码也直接构造，不弹框", not app.cancelled)
+    finally:
+        app.root.destroy()
+
+
 def test_contact_key():
     print("\n[联系人名唯一键]")
     eq("尾随空格被归一", core.contact_key("陈晓明 "), "陈晓明")
@@ -1304,6 +1335,7 @@ def main():
     print("界面接线回归测试（临时目录：%s）" % _TMP)
     try:
         _reset_aliases()
+        test_startup_lock()
         test_contact_key()
         test_bound_persona()
         test_load_hint_states()

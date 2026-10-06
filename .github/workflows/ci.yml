@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Syntax · import · config · secret guard · selftest
@@ -26,15 +29,23 @@ jobs:
         run: python -m pip install --upgrade pip pillow requests
 
       - name: Byte-compile all modules
-        run: python -m py_compile wx_helper.py wx_ui.py profile.py profile_ui.py ui_theme.py
+        run: python -m compileall -q -x "(build|dist|portable-output)" .
 
       - name: Import check
-        run: python -c "import wx_helper, wx_ui, profile, profile_ui, ui_theme; print('import ok')"
+        run: python -c "import wx_helper, buddy_ui, buddy_context, model_settings, runtime_cleanup, setup_wizard, profile_ui; print('import ok')"
 
       - name: Regression tests (no network, no real profile dir)
         run: |
+          python -m unittest discover -s scripts -p "test_*.py" -v
+          if ($LASTEXITCODE -ne 0) { throw 'Main workflow regressions failed' }
           python scripts/test_profile.py
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy profile regressions failed' }
           python scripts/test_ui.py
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy UI regressions failed' }
+          python scripts/test_jev.py
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy Jev regressions failed' }
+          python scripts/test_jev_ui.py
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy Jev UI regressions failed' }
 
       - name: Validate the shipped config template
         run: |
@@ -49,3 +60,27 @@ jobs:
       - name: First-run bootstrap creates config.json
         run: |
           python -c "import os,sys; ok=os.path.exists('config.json'); print('config.json bootstrapped' if ok else 'MISSING'); sys.exit(0 if ok else 1)"
+
+      - name: Isolated source UI and model-settings smoke
+        shell: pwsh
+        run: |
+          $env:WX_HELPER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'desk-buddy-source-smoke'
+          python wx_helper.py --ui-selftest --settings-selftest
+          if ($LASTEXITCODE -ne 0) { throw 'Source UI smoke failed' }
+          if (-not (Test-Path (Join-Path $env:WX_HELPER_DATA_DIR 'ui-selftest.ok'))) { throw 'Missing UI smoke marker' }
+
+      - name: Build portable release package
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller installation failed' }
+          ./build_portable.ps1 -OutputRoot (Join-Path $env:RUNNER_TEMP 'desk-buddy-portable')
+
+      - name: Isolated portable UI and model-settings smoke
+        shell: pwsh
+        run: |
+          $env:WX_HELPER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'desk-buddy-frozen-smoke'
+          $exe = Join-Path $env:RUNNER_TEMP 'desk-buddy-portable/WeChatStrategist/WeChatStrategist.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--ui-selftest','--settings-selftest') -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw 'Portable UI smoke failed' }
+          if (-not (Test-Path (Join-Path $env:WX_HELPER_DATA_DIR 'ui-selftest.ok'))) { throw 'Missing portable smoke marker' }

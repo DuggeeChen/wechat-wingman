@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
-title WeChat Wingman
+title Desk Buddy
 
 rem ---- 1. Locate Python: env override > PATH > py launcher ----
 set "PY=%WECHAT_WINGMAN_PYTHON%"

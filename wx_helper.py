@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-微信回复军师 (WeChat Wingman)  ——  按需触发版
+桌面搭子 (Desk Buddy)  ——  按需触发版
 ================================================
 按热键（默认 Ctrl+Alt+Q）或点分析 → 抓取并裁剪当前聊天
 → 识别聊天对象 → 按该对象的风格给出回复候选 → 点一下复制，自己粘贴。
@@ -14,6 +14,8 @@
 import base64
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -25,6 +27,10 @@ import tempfile
 import threading
 import time
 import unicodedata
+from urllib.parse import urlsplit
+
+import app_paths
+import credential_store
 
 # Windows 上 stdout 可能是 cp1252（GitHub Actions 的 runner 就是），打印中文会直接
 # 抛 UnicodeEncodeError。统一按 UTF-8 输出，本地和 CI 表现一致。
@@ -39,25 +45,44 @@ try:
 except ImportError:
     ctypes.windll.user32.MessageBoxW(
         None, "缺少依赖，请运行：python -m pip install pillow requests",
-        "微信回复军师启动失败", 0x10)
+        "桌面搭子启动失败", 0x10)
     raise
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(HERE, "config.json")
-LOG_PATH = os.path.join(HERE, "wx_helper.log")
+RESOURCE_DIR = app_paths.RESOURCE_DIR
+DATA_DIR = app_paths.ensure_data_dir()
+# HERE used to mean both code and data. Keep it as the writable location so older
+# helper code and tests remain compatible; bundled assets use RESOURCE_DIR.
+HERE = DATA_DIR
+CFG_PATH = app_paths.CONFIG_PATH
+LOG_PATH = app_paths.LOG_PATH
 LOG_LIMIT = 1024 * 1024
+
+# 界面上露出的名字。改这一处 = 窗口标题、错误弹窗、启动锁一起改。
+# launch.bat / launch.vbs 里另有 "Desk Buddy"（那两个文件按 ANSI 解析，
+# 写中文会变乱码，所以那边保持 ASCII）。
+APP_NAME = "桌面搭子"
 
 DEFAULT_CFG = {
     # 任何 OpenAI 兼容的视觉接口都能用：改 api_base / model / api_key_env 三行即可
     "api_base": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "api_key_env": "WECHAT_WINGMAN_API_KEY",
+    "api_credential_target": "WeChatStrategist:ReplyModel",
     "env_files": [".env"],        # 相对本脚本目录，也可写绝对路径；用来读 key
     "fallback_models": [],        # 主模型失败时依次尝试的备用模型
 
     "hotkey": "ctrl+alt+q",       # 按需触发：只有按它（或点按钮）才分析
                                   # 注意 Ctrl+Alt+W 是微信自己的「打开/隐藏微信」，别用
     "candidates": 3,
+
+    # 可选的 Jev 提示层：只判断对方意图并从已有回复中推荐，不生成、不发送消息。
+    "jev_enabled": True,
+    "jev_endpoint": "https://api.typesafe.ai/v1/systemone",
+    "jev_model": "jev-latest",
+    "jev_api_key_env": "TYPESAFE_API_KEY",
+    "jev_credential_target": "WeChatStrategist:Jev",
+    "jev_confidence_threshold": 0.55,
+    "jev_timeout_seconds": 10,
 
     "personas": {
         "默认": "口语化、简短、像真人打的字，贴合上下文语气，不要客套废话，不要解释理由",
@@ -72,6 +97,10 @@ DEFAULT_CFG = {
     "always_on_top": True,
     "save_debug": False,          # 打开会把最近一次截图存成 debug_last.png
     "capture_sidebar_max_px": 320,
+
+    # 启动锁：留空 = 不锁。写明文（"3650"）或 "sha256:<十六进制>" 都认。
+    # 只挡「别人顺手点开你的窗口」，不是安全边界 —— 想改就改这一行，想关就清空。
+    "lock_password": "",
 }
 
 u32 = ctypes.windll.user32
@@ -120,7 +149,7 @@ def log(msg):
 def load_cfg():
     cfg = json.loads(json.dumps(DEFAULT_CFG))
     if not os.path.exists(CFG_PATH):                 # 首次运行：从模板生成，方便直接改
-        example = os.path.join(HERE, "config.example.json")
+        example = app_paths.resource_path("config.example.json")
         if os.path.exists(example):
             try:
                 shutil.copyfile(example, CFG_PATH)
@@ -172,11 +201,21 @@ def env_file_paths(cfg):
 
 
 def load_key(cfg):
-    """按 环境变量 → .env 文件 的顺序找 API key。代码里永远不存明文 key。"""
+    """按 环境变量 → Windows 凭据 → .env 的顺序找 API key。"""
+    if cfg.get("api_key_source") == "credential":
+        key = credential_store.read_secret(cfg.get("api_credential_target", ""))
+        if key:
+            return key
+        raise SystemExit("此模型连接的密钥不存在，请打开连接设置重新保存 API Key。")
     name = cfg["api_key_env"]
     k = os.environ.get(name)
     if k:
         return k.strip()
+    target = str(cfg.get("api_credential_target") or "").strip()
+    if target:
+        k = credential_store.read_secret(target)
+        if k:
+            return k
     for p in env_file_paths(cfg):
         if not os.path.exists(p):
             continue
@@ -188,8 +227,25 @@ def load_key(cfg):
                         return line.split("=", 1)[1].strip().strip('"').strip("'")
         except OSError:
             continue
-    raise SystemExit("没找到 API key：环境变量 %s 未设置，%s 里也没有。"
-                     % (name, "、".join(env_file_paths(cfg)) or "配置文件没指定 env_files"))
+    raise SystemExit("没找到 API key：请重新运行程序完成首次配置，或使用 --setup 打开配置向导。")
+
+
+def setup_needed(cfg):
+    """Packaged copies require first-run setup; source checkouts keep legacy flows."""
+    if not app_paths.FROZEN:
+        return False
+    if not cfg.get("setup_complete"):
+        return True
+    try:
+        load_key(cfg)
+        return False
+    except SystemExit:
+        return True
+
+
+def run_setup(cfg):
+    from setup_wizard import run_setup as show_setup
+    return show_setup(cfg, save_cfg)
 
 
 def delete_persona_from_cfg(cfg, key):
@@ -427,12 +483,168 @@ REPLY_SYSTEM = ("你只负责根据微信截图或已读聊天文字，给用户
                 "看不清就说明看不清，不得编造聊天内容。遵守当前任务要求的输出格式。")
 
 
-def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=None):
-    """调一次模型。deadline 是 time.monotonic() 时间戳，可跨多次调用共享。
+_http_slots = threading.BoundedSemaphore(2)
+_http_sessions = queue.LifoQueue(maxsize=2)
 
-    一次「读取」流程现在最多会发两次请求（第一次带图识别，第二次纯文本带画像）。
-    若每次调用各自计时 45 秒，最坏情况就是 45+45=90 秒 —— 用户以为还是老样子，
-    实际等了一倍。把预算提到调用方，两次共享同一个 deadline。
+
+def _take_http_session(url):
+    # A lease has one network-worker owner. Never share a mutable Session across
+    # simultaneous requests, and never retain request-specific auth or cookies.
+    parsed = urlsplit(url)
+    origin = (parsed.scheme.lower(), parsed.netloc.lower())
+    try:
+        previous_origin, session = _http_sessions.get_nowait()
+        if previous_origin == origin:
+            return origin, session
+        session.close()
+    except queue.Empty:
+        pass
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return origin, session
+
+
+def _return_http_session(origin, session, reusable):
+    session.cookies.clear()
+    if reusable:
+        try:
+            _http_sessions.put_nowait((origin, session))
+            return
+        except queue.Full:
+            pass
+    session.close()
+
+
+def _bounded_post(url, headers, payload, timeout, deadline, cancel_event, on_delta=None, timings=None):
+    """Bound the caller's total wait; requests read-timeout alone is not a deadline.
+
+    In-flight HTTP cannot safely be killed. Keep at most two background requests;
+    abandoned results are discarded and never delivered to the UI.
+    """
+    if not _http_slots.acquire(blocking=False):
+        return None, "busy"
+    result = queue.Queue(maxsize=1)
+    deltas = queue.Queue()
+    progress_enabled = on_delta is not None
+    timings = timings if timings is not None else {}
+    request_started = time.monotonic()
+
+    def deliver_deltas():
+        while True:
+            try:
+                part = deltas.get_nowait()
+            except queue.Empty:
+                return
+            if on_delta is not None:
+                on_delta(part)
+
+    def send():
+        response = session = None
+        reusable = False
+        published = False
+        try:
+            origin, session = _take_http_session(url)
+            session.cookies.clear()
+            response = session.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
+            timings["headers"] = time.monotonic() - request_started
+            # Force body read while the network worker owns the request.
+            data = None
+            if response.status_code == 200:
+                if "text/event-stream" in response.headers.get("Content-Type", ""):
+                    timings["mode"] = "sse"
+                    parts, finished, size = [], False, 0
+                    # Avoid requests' default 512-byte buffer holding a completed
+                    # short candidate until a later event arrives.
+                    for raw in response.iter_lines(chunk_size=1):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise requests.Timeout("cancelled")
+                        if time.monotonic() >= deadline:
+                            raise requests.Timeout("deadline")
+                        if published:
+                            # Drain the HTTP terminator in this same bounded worker.
+                            # The caller already has its reply and need not wait.
+                            continue
+                        if not raw or not raw.startswith(b"data:"):
+                            continue
+                        line = raw[5:].strip().decode("utf-8")
+                        if line == "[DONE]":
+                            finished = True
+                            data = {"choices": [{"message": {"content": "".join(parts)}}]}
+                            result.put((response.status_code, data, None))
+                            published = True
+                            continue
+                        chunk = json.loads(line)
+                        if chunk.get("error"):
+                            raise ValueError("stream error")
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        part = choice.get("delta", {}).get("content") or ""
+                        if not isinstance(part, str):
+                            raise ValueError("invalid stream content")
+                        size += len(part)
+                        if size > 100000:
+                            raise ValueError("oversized stream response")
+                        parts.append(part)
+                        if part:
+                            timings.setdefault("first_content", time.monotonic() - request_started)
+                            if progress_enabled:
+                                deltas.put(part)
+                        if choice.get("finish_reason"):
+                            finished = True
+                    if not finished:
+                        raise ValueError("incomplete stream response")
+                    data = {"choices": [{"message": {"content": "".join(parts)}}]}
+                else:
+                    timings["mode"] = "json"
+                    data = response.json()
+                    timings["first_content"] = time.monotonic() - request_started
+            reusable = not (cancel_event is not None and cancel_event.is_set()) and time.monotonic() < deadline
+            if not published:
+                result.put((response.status_code, data, None))
+        except Exception as exc:
+            if not published:
+                result.put((None, None, exc))
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                try:
+                    if session is not None:
+                        _return_http_session(origin, session, reusable)
+                finally:
+                    _http_slots.release()
+
+    threading.Thread(target=send, daemon=True).start()
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return None, "cancel"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "deadline"
+        deliver_deltas()
+        try:
+            response_result = result.get(timeout=min(0.05, remaining))
+            if cancel_event is not None and cancel_event.is_set():
+                return None, "cancel"
+            if time.monotonic() >= deadline:
+                return None, "deadline"
+            deliver_deltas()
+            return response_result, None
+        except queue.Empty:
+            pass
+
+
+def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=None,
+               on_delta=None, stage=None):
+    """One bounded request chain. Progress is delivered on the caller thread.
+
+    on_delta(None) starts a new attempt; strings are content deltas, never thinking.
+    Callers may share a deadline or set a separate budget for each guarded stage.
     """
     content = [{"type": "text", "text": prompt}]
     if b64:
@@ -440,18 +652,25 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
             "url": "data:image/jpeg;base64," + b64}})
     payload = {
         "model": cfg["model"],
-        "reasoning_effort": "none",          # 关掉思考模式，25s → 4s
-        "max_tokens": 3000,
+        "stream": bool(cfg.get("stream_responses", True)),
         "messages": [
             {"role": "system", "content": system or REPLY_SYSTEM},
             {"role": "user", "content": content},
         ],
     }
+    token_field = cfg.get("token_limit_field", "max_tokens")
+    if token_field not in ("max_tokens", "max_completion_tokens"):
+        token_field = "max_tokens"
+    payload[token_field] = max(16, min(5000, int(cfg.get("max_response_tokens", 5000))))
+    if cfg.get("send_reasoning_effort", cfg.get("api_base", "").rstrip("/") != "https://api.openai.com/v1"):
+        payload["reasoning_effort"] = "none"
     url = cfg["api_base"].rstrip("/") + "/chat/completions"
     chain = [cfg["model"]] + [m for m in cfg.get("fallback_models", []) if m != cfg["model"]]
     last = "服务暂时不可用"
     if deadline is None:
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 60
+    started = time.monotonic()
+    stage_name = {"capture": "识别", "generate": "生成", "check": "检查"}.get(stage, "请求")
     for mi, mname in enumerate(chain):
         if cancel_event is not None and cancel_event.is_set():
             return "", "已取消"
@@ -460,25 +679,54 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
         if remaining <= 2:
             return "", "请求超时，请稍后重试"
         try:
-            r = requests.post(url, headers={"Authorization": "Bearer " + key},
-                              json=payload, timeout=(min(5, remaining), min(15, remaining)))
+            if on_delta is not None:
+                on_delta(None)
+            attempt_started = time.monotonic()
+            timings = {}
+            read_wait = min(25 if mi < len(chain)-1 else 40, remaining)
+            response, stopped = _bounded_post(url, {"Authorization": "Bearer " + key},
+                                              copy_payload(payload), (min(5, remaining), read_wait),
+                                              deadline, cancel_event, on_delta=on_delta, timings=timings)
+            log("阶段=%s attempt=%d mode=%s headers=%s first_content=%s elapsed=%.2fs outcome=%s" %
+                (stage_name, mi+1, timings.get("mode", "未知"),
+                 "%.2fs" % timings["headers"] if "headers" in timings else "未到达",
+                 "%.2fs" % timings["first_content"] if "first_content" in timings else "未到达",
+                 time.monotonic()-attempt_started,
+                 stopped or (type(response[2]).__name__ if response[2] else "HTTP %s" % response[0])))
+            if stopped:
+                log("请求停止: %s elapsed=%.1fs" % (stopped, time.monotonic()-started))
+                return "", {"cancel": "已取消", "deadline": "总等待时间已到；已读消息保留，可重试当前步骤",
+                            "busy": "上一请求仍在结束，请稍等几秒后重试"}[stopped]
+            status_code, data, error = response
+            if error:
+                raise error
             if cancel_event is not None and cancel_event.is_set():
                 return "", "已取消"
-            if r.status_code == 200:
+            if status_code == 200:
                 if mi:
                     log("已改用备用模型 %s" % mname)
-                return r.json()["choices"][0]["message"]["content"] or "", None
-            log("模型请求失败: HTTP %s 模型=%s" % (r.status_code, mname))
-            if r.status_code in (401, 403):
-                return "", "API 凭据无效或无权限（HTTP %s）" % r.status_code
-            if r.status_code == 429:
+                log("模型请求完成: elapsed=%.1fs" % (time.monotonic()-started))
+                content = data["choices"][0]["message"]["content"]
+                if not isinstance(content, str):
+                    raise ValueError("invalid content")
+                return content, None
+            log("模型请求失败: HTTP %s 模型=%s" % (status_code, mname))
+            if status_code in (401, 403):
+                return "", "API 凭据无效或无权限（HTTP %s）" % status_code
+            if status_code == 429:
                 last = "请求过于频繁（HTTP 429）"
-            elif r.status_code == 404:
+            elif status_code == 404:
                 last = "模型不可用（HTTP 404）"
-            elif r.status_code == 400:
+            elif status_code == 400:
                 last = "请求格式或模型不兼容（HTTP 400）"
             else:
-                last = "服务暂时不可用（HTTP %s）" % r.status_code
+                last = "服务暂时不可用（HTTP %s）" % status_code
+        except requests.ConnectTimeout:
+            last = "连接服务超时，请检查网络或接口地址"
+            log("连接超时 elapsed=%.1fs" % (time.monotonic()-started))
+        except requests.ReadTimeout:
+            log("模型响应等待超时 elapsed=%.1fs" % (time.monotonic()-started))
+            last = "等待模型返回超时；已读消息保留，可重试当前步骤"
         except requests.Timeout:
             last = "请求超时，请稍后重试"
             log("模型请求超时: %s" % mname)
@@ -489,6 +737,11 @@ def call_model(cfg, key, b64, prompt, cancel_event=None, system=None, deadline=N
             last = "模型返回格式异常"
             log("模型返回格式异常: %s" % mname)
     return "", last
+
+
+def copy_payload(payload):
+    # Each abandoned network worker must retain its own model selection.
+    return json.loads(json.dumps(payload))
 
 
 def parse_reply(txt):
@@ -792,8 +1045,33 @@ def open_style_editor(root, cfg, var_persona, cmb, set_status):
 
 
 def run_ui(cfg, key):
-    from wx_ui import ReplyApp
-    ReplyApp(sys.modules[__name__], cfg, key).run()
+    from buddy_ui import BuddyApp
+    BuddyApp(sys.modules[__name__], cfg, key).run()
+
+
+# ------------------------------------------------------------------ 启动锁
+def lock_enabled(cfg):
+    """config.json 里 lock_password 非空 = 启动时要输密码。空/缺失 = 不锁（默认）。"""
+    return bool(str(cfg.get("lock_password") or "").strip())
+
+
+def check_lock_password(cfg, entered):
+    """校验启动密码。
+
+    存明文（"3650"）或 "sha256:<hex>" 都认，比较用 compare_digest 防时序侧信道。
+    这是**防顺手打开**的门帘，不是加密：config.json 就在程序旁边，
+    拿到文件的人随时能删掉这一行。别拿它保护真正要紧的东西。
+    """
+    stored = str(cfg.get("lock_password") or "").strip()
+    if not stored:
+        return True
+    entered = str(entered or "")
+    if stored.lower().startswith("sha256:"):
+        want = stored.split(":", 1)[1].strip().lower()
+        got = hashlib.sha256(entered.encode("utf-8")).hexdigest()
+    else:
+        want, got = stored, entered
+    return hmac.compare_digest(want, got)
 
 
 # ------------------------------------------------------------------ 自检
@@ -803,13 +1081,15 @@ def selftest(cfg):
     print("默认风格:", cfg["default_persona"])
     print("联系人列表最大裁剪宽度:", cfg.get("capture_sidebar_max_px", 320), "像素")
     print("聊天区按窗口实际宽高裁剪，保留完整高度。")
+    print("数据目录:", DATA_DIR)
+    print("运行模式:", "打包版" if app_paths.FROZEN else "源码版")
     print("本地自检完成；没有截图，也没有发起网络请求。")
 
 
 def single_instance():
     """防止双击两次开出两个窗口。会话内命名锁，避开 Global 命名空间的权限问题。"""
     global _mutex_handle
-    _mutex_handle = _k32.CreateMutexW(None, False, "WeChatWingman_SingleInstance")
+    _mutex_handle = _k32.CreateMutexW(None, False, "DeskBuddy_SingleInstance")
     if not _mutex_handle:
         raise OSError("无法创建单实例锁")
     return ctypes.get_last_error() != 183        # 183 = ERROR_ALREADY_EXISTS
@@ -817,8 +1097,32 @@ def single_instance():
 
 if __name__ == "__main__":
     cfg = load_cfg()
-    if "--selftest" in sys.argv:
+    if "--ui-selftest" in sys.argv:
+        import faulthandler
+        import traceback
+        with open(os.path.join(DATA_DIR, "ui-selftest.trace"), "w", encoding="utf-8") as trace:
+            faulthandler.dump_traceback_later(8, file=trace)
+            try:
+                from buddy_ui import BuddyApp
+                app = BuddyApp(sys.modules[__name__], cfg, "", testing=True)
+                app.root.update()
+                if "--settings-selftest" in sys.argv:
+                    app.open_model_settings()
+                    app.root.update()
+                    app.model_settings.close()
+                app.close()
+                with open(os.path.join(DATA_DIR, "ui-selftest.ok"), "w", encoding="utf-8") as marker:
+                    marker.write("UI construction and shutdown passed; no network or credentials used.")
+            except Exception:
+                traceback.print_exc(file=trace)
+                sys.exit(1)
+            finally:
+                faulthandler.cancel_dump_traceback_later()
+    elif "--selftest" in sys.argv:
         selftest(cfg)
+    elif "--setup" in sys.argv:
+        if run_setup(cfg):
+            print("配置已保存。")
     elif "--styles" in sys.argv:
         import tkinter as tk
         _root = tk.Tk()
@@ -833,17 +1137,25 @@ if __name__ == "__main__":
         _root.mainloop()
     else:
         if not single_instance():
-            u32.MessageBoxW(None, "微信军师已经在运行了。\n看屏幕右上角那个窗口。",
-                            "微信回复军师", 0x40)
+            u32.MessageBoxW(None, APP_NAME + "已经在运行了。\n看屏幕右上角那个窗口。",
+                            APP_NAME, 0x40)
             sys.exit(0)
         log("=" * 44)
         try:
-            run_ui(cfg, load_key(cfg))
+            cancelled_setup = False
+            if setup_needed(cfg):
+                if not run_setup(cfg):
+                    log("首次配置已取消")
+                    cancelled_setup = True
+                else:
+                    cfg = load_cfg()
+            if not cancelled_setup:
+                run_ui(cfg, load_key(cfg))
         except SystemExit as e:
             log("启动失败: 缺少 API key")
-            u32.MessageBoxW(None, str(e) or "没有找到 API key。", "微信回复军师", 0x10)
+            u32.MessageBoxW(None, str(e) or "没有找到 API key。", APP_NAME, 0x10)
             raise
         except Exception as e:
-            log("启动失败: %s" % type(e).__name__)
-            u32.MessageBoxW(None, "启动失败，请查看 wx_helper.log。", "微信回复军师", 0x10)
+            log("启动失败: %s: %s" % (type(e).__name__, str(e).replace("\n", " ")[:500]))
+            u32.MessageBoxW(None, "启动失败，请查看 wx_helper.log。", APP_NAME, 0x10)
             raise

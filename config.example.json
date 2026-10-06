@@ -1,14 +1,22 @@
 {
-  "_说明": "首次运行会自动复制成 config.json。这里全部是虚构数据，改成你自己的即可。",
+  "_说明": "首次运行会打开配置向导。这里全部是虚构数据，API Key 只保存在 Windows 凭据管理器。",
 
   "api_base": "https://api.openai.com/v1",
   "model": "gpt-4o-mini",
   "api_key_env": "WECHAT_WINGMAN_API_KEY",
+  "api_credential_target": "WeChatStrategist:ReplyModel",
   "env_files": [".env"],
   "fallback_models": [],
 
   "hotkey": "ctrl+alt+q",
   "candidates": 3,
+  "jev_enabled": true,
+  "jev_endpoint": "https://api.typesafe.ai/v1/systemone",
+  "jev_model": "jev-latest",
+  "jev_api_key_env": "TYPESAFE_API_KEY",
+  "jev_credential_target": "WeChatStrategist:Jev",
+  "jev_confidence_threshold": 0.55,
+  "jev_timeout_seconds": 10,
 
   "personas": {
     "默认": "口语化、简短、像真人打的字，贴合上下文语气，不要客套废话，不要解释理由",
@@ -19,12 +27,12 @@
   },
   "default_persona": "默认",
 
-  "contact_personas": {
-    "李小明": "亲密",
-    "周总": "上级"
-  },
+  "contact_personas": {},
 
   "always_on_top": true,
   "save_debug": false,
-  "capture_sidebar_max_px": 320
+  "capture_sidebar_max_px": 320,
+
+  "_lock_password说明": "留空 = 不锁。填了就启动时要输密码；明文或 sha256:<十六进制> 都认。只是防别人顺手点开，不是安全边界。",
+  "lock_password": ""
 }

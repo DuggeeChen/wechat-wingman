@@ -26,10 +26,11 @@ import threading
 import time
 import unicodedata
 
+import app_paths
 import wx_helper as core
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROFILE_DIR = os.path.join(HERE, "profiles")
+HERE = app_paths.DATA_DIR
+PROFILE_DIR = app_paths.PROFILE_DIR
 HISTORY_DIR = os.path.join(PROFILE_DIR, ".history")
 DELETED_DIR = os.path.join(PROFILE_DIR, ".deleted")
 IMPORT_DIR = os.path.join(PROFILE_DIR, ".imports")
