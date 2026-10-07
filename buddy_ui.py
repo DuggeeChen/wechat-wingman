@@ -242,6 +242,18 @@ class BuddyApp(LegacyApp):
             self.invalidate()
             self.set_status("聊天上下文已变化，请重新生成。", AMBER)
             return
+        self.selected_card = index
+        self.render_advice()
+        self.render_cards()
+        self.set_status("已切换到「%s」 · 沿用这条回复，需要新内容可点「换一条」。" % self.cards[index]["label"], GREEN)
+
+    def rewrite_direction(self, index):
+        if self.busy or not 0 <= index < len(self.cards) or not self.finish_edit():
+            return
+        if self.reply_basis is not None and self.reply_basis != self.current_reply_basis():
+            self.invalidate()
+            self.set_status("聊天上下文已变化，请重新生成。", AMBER)
+            return
         self.start("direction", index, self.cards[index]["label"])
 
     def reply_snapshot(self):
@@ -261,16 +273,26 @@ class BuddyApp(LegacyApp):
         return True
 
     def previous_direction(self):
-        if self.busy or not self.direction_history or not self.finish_edit():
+        if (self.busy or not self.direction_history or not self.finish_edit()
+                or self.direction_history.get("rewrite_index") != self.selected_card):
             return
         saved, self.direction_history = self.direction_history, None
-        if self.restore_reply_snapshot(saved):
-            self.set_status("已恢复换写前的建议。", GREEN)
+        if saved["basis"] != self.current_reply_basis():
+            self.invalidate()
+            return
+        self.cards[self.selected_card] = copy.deepcopy(saved["cards"][self.selected_card])
+        self.result = dict(saved["result"], cards=self.cards)
+        self.render_advice()
+        self.render_cards()
+        self.set_status("已恢复这条回复的上一版。", GREEN)
 
     def merge_direction(self, result):
         request = self.direction_pending
         cards = copy.deepcopy(request["saved"]["cards"])
-        cards[request["index"]] = result["cards"][0]
+        updated = copy.deepcopy(result["cards"][0])
+        if "intent" not in updated and "intent" in cards[request["index"]]:
+            updated["intent"] = cards[request["index"]]["intent"]
+        cards[request["index"]] = updated
         self.selected_card = request["index"]
         self.result = dict(result, cards=cards)
         self.cards = cards
@@ -474,7 +496,7 @@ class BuddyApp(LegacyApp):
         if len(self.cards) > 1:
             directions = tk.Frame(self.card_box, bg=BG)
             directions.pack(fill="x", pady=(0, 10))
-            self.label(directions, "按方向换写 · 点击生成新回复", MUTED, SMALL).pack(anchor="w", pady=(0, 5))
+            self.label(directions, "回复方向 · 点击查看已有回复", MUTED, SMALL).pack(anchor="w", pady=(0, 5))
             for i, card in enumerate(self.cards):
                 b = self.button(directions, card["label"], lambda n=i: self.choose_direction(n),
                                 primary=i == self.selected_card, small=True)
@@ -494,6 +516,7 @@ class BuddyApp(LegacyApp):
             self.feedback[i] = marker
             editing = i == self.editing_index
             for label, func, primary in (("完成" if editing else "编辑", self.finish_edit if editing else lambda n=i: self.show_edit(n), False),
+                                          ("换一条", lambda n=i: self.rewrite_direction(n), False),
                                           ("复制", lambda n=i: self.copy_card(n), True)):
                 b = self.button(row, label, func, primary=primary, small=True)
                 b.pack(side="right", padx=(6, 0))
@@ -517,8 +540,8 @@ class BuddyApp(LegacyApp):
             b = self.button(self.card_box, "收起其他方案" if self.expanded else "查看另外 %d 种回复" % (len(self.cards)-1), self.toggle_cards, small=True)
             b.pack(anchor="w", pady=(0, 8))
             self.controls.append(b)
-        if self.direction_history and not self.busy:
-            b = self.button(self.card_box, "恢复换写前的建议", self.previous_direction, small=True)
+        if self.direction_history and not self.busy and self.direction_history.get("rewrite_index") == self.selected_card:
+            b = self.button(self.card_box, "恢复这条回复的上一版", self.previous_direction, small=True)
             b.pack(anchor="w", pady=(0, 8))
             self.controls.append(b)
 
@@ -854,10 +877,13 @@ class BuddyApp(LegacyApp):
         self.set_busy(True)
         payload = {"cfg": copy.deepcopy(self.cfg), "conversation": copy.deepcopy(self.active),
                    "style": self.cfg["personas"].get(self.persona.get(), "自然简短"),
+                   "style_name": self.persona.get(),
                    "previous": [c["text"] for c in self.cards], "draft": instruction,
                    "direction": instruction if mode == "direction" else None,
                    "cache": copy.deepcopy(self.capture_cache), "session_id": self.active.id if self.active else None,
                    "basis": self.current_reply_basis()}
+        if mode == "direction":
+            payload["direction_context"] = copy.deepcopy(self.cards[index])
         self.read_restore = self.reply_snapshot() if is_read else None
         if mode == "direction":
             if self.direction_history:
@@ -907,7 +933,7 @@ class BuddyApp(LegacyApp):
             else:
                 prompt = C.generation_prompt(payload["conversation"], payload["style"], payload["previous"],
                                              payload["draft"] if mode == "check" else None,
-                                             direction=payload.get("direction"))
+                                             direction=payload.get("direction"), direction_context=payload.get("direction_context"))
             if event.is_set():
                 return
             prepared_at = time.monotonic()
@@ -932,6 +958,8 @@ class BuddyApp(LegacyApp):
                         emit("partial", (result, payload["basis"]))
             text, error = self.core.call_model(cfg, self.key, image, prompt, cancel_event=event,
                                                deadline=time.monotonic()+60, stage=stage,
+                                               system=(self.core.REPLY_SYSTEM + "\n\n" + C.style_instruction(payload["style"], payload.get("style_name", "")))
+                                                      if stage != "capture" else None,
                                                on_delta=progress if stage == "generate" else None)
             received_at = time.monotonic()
             if event.is_set():
@@ -991,7 +1019,7 @@ class BuddyApp(LegacyApp):
             return None
         connection = {k: self.cfg.get(k) for k in ("api_base", "model", "fallback_models", "api_credential_target",
                       "stream_responses", "send_reasoning_effort", "token_limit_field", "max_response_tokens")}
-        return (c.id, c.revision, c.target_id, c.explicit_target, c.background, c.goal, c.boundary,
+        return (c.id, c.revision, c.target_id, c.explicit_target, c.background, c.goal, c.boundary, self.persona.get(),
                 self.cfg["personas"].get(self.persona.get(), "自然简短"),
                 json.dumps(connection, sort_keys=True, ensure_ascii=False))
 
@@ -1092,6 +1120,7 @@ class BuddyApp(LegacyApp):
             if direction:
                 self.merge_direction(value)
                 self.direction_history = self.direction_pending["saved"]
+                self.direction_history["rewrite_index"] = self.direction_pending["index"]
                 self.direction_pending = None
             else:
                 self.result = value
@@ -1226,6 +1255,19 @@ class BuddyApp(LegacyApp):
         menu.add_separator()
         menu.add_command(label="关于上下文与隐私", command=lambda: messagebox.showinfo("桌面搭子 2", "只在你点击时截图。\n生成或检查时，将本次选中的聊天、前情、目标与底线发给你配置的主模型。\n聊天仅在本次运行内存中保留，关闭后清空。\n主流程不再自动更新人物画像或调用 Jev。\n截图身份仍可能识别错误，请核对。", parent=self.root))
         menu.tk_popup(self.menu_button.winfo_rootx(), self.menu_button.winfo_rooty()+self.menu_button.winfo_height())
+
+    def open_styles(self):
+        if self.busy or not self.finish_edit():
+            return
+        before = self.current_reply_basis()
+        top = self.core.open_style_editor(self.root, self.cfg, self.persona, self.combo, self.set_status)
+        def changed(event):
+            if event.widget == top and not self.closed and before != self.current_reply_basis():
+                self.invalidate()
+                self.set_status("风格库已更新，重新生成会采用新的表达要求。", GREEN)
+        top.bind("<Destroy>", changed, add="+")
+        top.transient(self.root)
+        top.grab_set()
 
     def open_model_settings(self):
         if self.busy:

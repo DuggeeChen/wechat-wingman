@@ -93,7 +93,7 @@ class InteractionTests(unittest.TestCase):
             a.choose_direction(1)
         self.assertEqual(a.cards[0]["text"], "先给我一个范围吧。")
         self.assertIsNone(a.editing_index)
-        a.cancel()
+        a.choose_direction(0)
         self.assertEqual(a.card_labels[0].cget("text"), "先给我一个范围吧。")
 
     def test_cached_read_restores_edited_reply_and_preserves_compact_view(self):

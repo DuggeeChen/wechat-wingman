@@ -1,4 +1,4 @@
-# Architecture — v2.6.2
+# Architecture — v2.6.3
 
 `BuddyApp` is the default Tk entry. It uses `wx_helper` for Win32 capture and bounded HTTP, and inherits shared window infrastructure from `wx_ui.ReplyApp`, overriding its legacy reply pipeline.
 
@@ -43,7 +43,9 @@ For exact official DeepSeek endpoints (root or `/v1`) and the supported Flash/Pr
 
 SSE content deltas, not reasoning, enter the collector. Complete candidate objects are published after the question field arrives. Copy is enabled; editing waits for completion. Fallback resets previews. Malformed, interrupted or inconsistent final results remove previews and prompt review of already copied text. JSON-only responses retain the full-result path.
 
-Direction rewrites use a separate `direction` mode with the same guarded text-generation transport. The selected label, previous cards and at most one prior card snapshot enter the prompt; it requests exactly one fresh candidate. A normalization check rejects old content and punctuation/whitespace-only changes before preview or final acceptance. UI events replace only the selected card, retaining other cards from the request snapshot. Busy clicks cannot create concurrent rewrites. Cancellation/failure restores the snapshot only when its conversation basis is still current; late events cannot overwrite newer state. One previous snapshot can be restored locally after a successful rewrite. These snapshots live only in session memory.
+Direction selection only changes the displayed card index. Current cards are the in-memory cache for each direction, including generated and manual edits. Explicit rewrites use a separate `direction` mode with the same guarded text transport. The selected label, optional intent, original card and previous text enter the prompt; it requests exactly one fresh candidate. Normalization and high text-similarity checks reject old or nearly unchanged wording before preview/final acceptance; these are not semantic classifiers. UI events replace only the selected card. Busy clicks cannot create concurrent rewrites. Cancellation/failure restores the snapshot only when its conversation basis is current; late events cannot overwrite newer state. Restoring the latest previous version replaces just that card. Context, voice name and definition are part of the basis; snapshots stay in session memory.
+
+Voice name and definition enter system writing instructions, separate from quoted conversation data. `tone_styles.py` supplies concrete built-ins and upgrades only exact original definitions during config loading in memory; it does not write config or overwrite custom definitions. Closing the style editor invalidates cards if their selected voice changed. Candidate intents preserve strategy during rewrites; duplicate initial cards are collapsed consistently in full and streamed parsing.
 
 Logs distinguish local preparation, API completion, parsing and first usable reply. Header time includes both network and server wait, not just connection time. The image cache holds one fingerprint/session ID, not image pixels. Capture and HTTP image data exist only as temporary worker memory.
 

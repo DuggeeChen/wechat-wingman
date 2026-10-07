@@ -48,7 +48,7 @@ foreach ($DocName in @('README.md', 'CHANGELOG.md', 'VERSION', 'SECURITY.md')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot $DocName) -Destination $PackageTarget
 }
 New-Item -ItemType Directory -Path (Join-Path $PackageTarget 'docs') | Out-Null
-foreach ($DocName in @('ARCHITECTURE.md', 'PRIVACY.md', 'FAQ.md')) {
+foreach ($DocName in @('ARCHITECTURE.md', 'PRIVACY.md', 'FAQ.md', 'VOICE.md')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot ('docs\' + $DocName)) -Destination (Join-Path $PackageTarget 'docs')
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot '重新配置.bat') -Destination $PackageTarget

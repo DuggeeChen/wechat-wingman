@@ -295,22 +295,20 @@ class UITests(unittest.TestCase):
         self.app.plan_changed()
         self.assertEqual(self.app.cards, [])
 
-    def test_direction_switch_starts_targeted_generation_without_plan_change(self):
+    def test_direction_switch_reuses_cards_without_network_or_plan_change(self):
         self.fill()
         a = self.app
         a.cards = [{"text": "具体有几张？", "label": "问清范围"}, {"text": "这次帮不上，抱歉。", "label": "婉拒"}]
         a.render_cards()
         with patch("buddy_ui.threading.Thread") as thread:
             a.choose_direction(1)
-            self.assertTrue(a.busy)
+            self.assertFalse(a.busy)
             self.assertEqual(a.card_labels[0].cget("text"), "这次帮不上，抱歉。")
-            payload = thread.call_args.kwargs["args"][3]
-            self.assertEqual(payload["direction"], "婉拒")
-            self.assertEqual(payload["previous"], ["具体有几张？", "这次帮不上，抱歉。"])
+            a.choose_direction(0)
+            self.assertEqual(a.card_labels[0].cget("text"), "具体有几张？")
+            thread.assert_not_called()
         self.assertEqual((a.active.goal, a.active.boundary), ("", ""))
-        a.choose_direction(0)
-        self.assertEqual(a.selected_card, 1)
-        a.cancel()
+        self.assertEqual(a.selected_card, 0)
 
     def test_collapsed_requirements_remain_applied_and_clear_invalidates(self):
         self.fill()

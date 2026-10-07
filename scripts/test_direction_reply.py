@@ -80,7 +80,7 @@ class DirectionFixture:
 
     def begin(self, index=1):
         with patch("buddy_ui.threading.Thread"):
-            self.app.choose_direction(index)
+            self.app.rewrite_direction(index)
         return self.app.epoch
 
 
@@ -89,7 +89,7 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
         a = self.app
         with patch.object(core, "call_model", return_value=(output(), None)) as call, \
              patch.object(core, "find_wechat") as capture, patch.object(core, "grab") as grab:
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             self.pump()
         self.assertEqual(call.call_count, 1)
         self.assertIsNone(call.call_args.args[2])
@@ -107,7 +107,7 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
         for n, index in enumerate([0, 1, 2, 2]):
             card = {"label": CARDS[index]["label"], "text": "这是新的回复第%d条。" % n}
             with patch.object(core, "call_model", return_value=(output(card), None)) as call:
-                a.choose_direction(index)
+                a.rewrite_direction(index)
                 self.pump()
                 self.assertEqual(call.call_count, 1)
                 self.assertEqual(a.cards[index], card)
@@ -115,7 +115,7 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
     def test_old_content_from_another_direction_cannot_be_displayed_as_new(self):
         a = self.app
         with patch.object(core, "call_model", return_value=(output(CARDS[0]), None)):
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             self.pump()
         self.assertEqual(a.cards, CARDS)
         self.assertIn("重复", a.status.cget("text"))
@@ -129,7 +129,7 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
             return output(CARDS[2]), None
         with patch.object(core, "call_model", side_effect=response), \
              patch.object(a, "handle_event", wraps=a.handle_event) as events:
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             self.pump()
         self.assertEqual(a.cards, CARDS)
         self.assertFalse(a.preview_active)
@@ -177,26 +177,26 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
         self.assertEqual(a.cards, [])
         self.assertIsNone(a.direction_pending)
         with patch.object(core, "call_model") as call:
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             call.assert_not_called()
 
     def test_restore_last_version_has_no_request_and_preserves_original_order(self):
         a = self.app
         with patch.object(core, "call_model", return_value=(output(), None)):
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             self.pump()
         with patch.object(core, "call_model") as call:
             a.previous_direction()
             call.assert_not_called()
         self.assertEqual(a.cards, CARDS)
-        self.assertEqual(a.selected_card, 0)
+        self.assertEqual(a.selected_card, 1)
         self.assertIsNone(a.direction_history)
 
     def test_busy_click_does_not_start_second_request(self):
         a = self.app
         job = self.begin()
         with patch("buddy_ui.threading.Thread") as thread:
-            a.choose_direction(2)
+            a.rewrite_direction(2)
             thread.assert_not_called()
         self.assertEqual(a.epoch, job)
         self.assertEqual(a.selected_card, 1)
@@ -208,7 +208,7 @@ class DirectionUiTests(DirectionFixture, unittest.TestCase):
         a.inline_editor.delete("1.0", "end")
         a.inline_editor.insert("1.0", "我改过的回复。")
         with patch.object(core, "call_model", return_value=(output(), None)) as call:
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             self.pump()
         self.assertEqual(a.cards[0]["text"], "我改过的回复。")
         self.assertIn("我改过的回复。", call.call_args.args[3])
@@ -229,7 +229,7 @@ class DirectionStreamTests(DirectionFixture, unittest.TestCase):
         server.prefixes["synthetic-model"] = '{"question":"","candidates":[' + json.dumps(NEW)
         server.tails["synthetic-model"] = '],"situation":"","facts":[]}'
         try:
-            a.choose_direction(1)
+            a.rewrite_direction(1)
             end = time.monotonic()+3
             while not a.preview_active and time.monotonic() < end:
                 try:

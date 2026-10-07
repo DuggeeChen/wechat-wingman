@@ -1,4 +1,4 @@
-# Privacy — v2.6.2
+# Privacy — v2.6.3
 
 Recognition, generation and draft checks send requested data to your configured model service. There is no telemetry, continuous capture or automatic sending. This is not an offline-only app.
 

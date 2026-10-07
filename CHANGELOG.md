@@ -1,5 +1,18 @@
 # 版本记录 / Changelog
 
+## v2.6.3
+
+修正 v2.6.2 将方向切换与换写绑定的交互，并加强语气风格和方向差异。
+
+- 方向按钮即时显示该方向现有回复；切回来复用最新生成或编辑的文字，不请求模型。卡片上的「换一条」单独触发该方向的文字生成。
+- 换写继续保留其他卡片；恢复上一版只还原这一条，不覆盖其他卡片的手工修改。
+- 风格名称和说明作为明确的写作指令传给模型，落实到用词、句式、节奏、语气词和表情；修改当前风格后旧建议失效。
+- 五种原版内置风格升级为具体描述，原样的旧默认说明在读取时升级到内存，个人配置不自动写回；自定义名称、修改过的说明和空说明保留。
+- 要求不同方向改变沟通行动或立场，并携带具体用意。重复初始候选合并；换写拦截原样及高度相近的文本，不仅检查标点。相似度是文字检查，不是完整的语义判断。
+- 主流程 158 项检查通过。另用同一虚构情景、同一方向实测默认/商务/亲密，输出呈现了口语、专业与熟络表达的差异；示例见 [语气说明](docs/VOICE.md)。
+
+**Patch summary:** selecting a direction reuses its current reply; an explicit rewrite action generates new content. Voice definitions become system-level writing instructions, original built-ins get concrete descriptions while custom edits survive, and strategy intents plus duplicate checks reduce interchangeable candidates. Voice effects were sampled with fictional text, without uploading real chats.
+
 ## v2.6.2
 
 修复点击回复方向只调换已有卡片顺序、不产生新内容的问题。

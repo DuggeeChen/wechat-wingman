@@ -1,4 +1,4 @@
-# FAQ — v2.6.2
+# FAQ — v2.6.3
 
 ### Does it send messages or watch continuously?
 No. Each read is user-triggered; you copy and paste yourself. No client injection, database access or automatic scrolling.
@@ -21,8 +21,11 @@ A last self-message stops automatic generation to avoid answering as the other p
 ### Must I fill in a goal and boundary?
 No. 特殊要求 is optional. Blank fields generate from context without a form-filling step.
 
-### Clicking a direction only rearranges old replies.
-This was the behavior before v2.6.2. Direction buttons now make one text-only request for a fresh reply in the selected direction, replacing that card while preserving alternatives. The heading explicitly says clicking generates a new reply. Duplicate content, including punctuation-only changes, is rejected. Failure or cancellation restores originals; a completed rewrite has a restore button. To view existing cards without a request, expand the alternatives instead. Restart a running source installation to load the fix.
+### Does clicking a direction generate again?
+In v2.6.3 it instantly shows that direction's current reply. Returning to it reuses the latest generated or edited version. Click the separate 换一条 button when you want new content; it uses existing text context, preserving alternatives. Failure/cancellation restores originals, and restoring a previous version affects only that card. Context or voice changes invalidate old replies. Restart a running source installation to load the fix.
+
+### Does the voice library really affect wording?
+The selected name and definition now enter explicit system writing instructions, separately from quoted chats. Built-in guides specify vocabulary, rhythm, familiarity and emoji use. Edited/custom definitions are retained; only exact original defaults migrate in memory. A fictional same-context comparison showed differences between default, business and familiar voices; see [examples](VOICE.md). Voice changes expression, while facts, identity and commitments remain grounded. Actual quality still depends on your provider and the conversation.
 
 ### Why can replies still be slow?
 Fresh captures require recognition followed by generation. Compatible streams show complete candidates early, but API latency remains. Stage logs distinguish waits; generation retry is text-only.

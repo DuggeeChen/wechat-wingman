@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import app_paths
 import credential_store
+import tone_styles
 
 # Windows 上 stdout 可能是 cp1252（GitHub Actions 的 runner 就是），打印中文会直接
 # 抛 UnicodeEncodeError。统一按 UTF-8 输出，本地和 CI 表现一致。
@@ -84,13 +85,7 @@ DEFAULT_CFG = {
     "jev_confidence_threshold": 0.55,
     "jev_timeout_seconds": 10,
 
-    "personas": {
-        "默认": "口语化、简短、像真人打的字，贴合上下文语气，不要客套废话，不要解释理由",
-        "商务": "简洁专业、留余地、不寒暄不废话，先把事说清楚，语气平和但不过分热络",
-        "亲密": "放松自然、带点情绪和玩笑，可以用语气词，像跟熟人随手打的字",
-        "上级": "尊重有分寸、先回应再表态、不抢话不追问，语气稳，避免绝对化的承诺",
-        "客套": "礼貌周到、给对方留台阶、多用缓冲词，事情说清楚但态度温和",
-    },
+    "personas": dict(tone_styles.DEFAULT_STYLES),
     "default_persona": "默认",
     "contact_personas": {},       # {"聊天对象名": "风格名"} —— 认到是谁就用对应风格
 
@@ -164,6 +159,7 @@ def load_cfg():
             log("配置读取失败，用默认值: %r" % e)
     if not cfg.get("personas"):
         cfg["personas"] = dict(DEFAULT_CFG["personas"])
+    cfg["personas"] = tone_styles.upgrade_builtin_styles(cfg["personas"])
     if cfg.get("default_persona") not in cfg["personas"]:
         cfg["default_persona"] = list(cfg["personas"])[0]
     return cfg
