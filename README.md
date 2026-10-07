@@ -7,7 +7,7 @@ Read a WeChat conversation on demand and get editable reply suggestions using yo
 [中文](README.zh-CN.md) · [Windows download](https://github.com/DuggeeChen/wechat-wingman/releases/latest) · [Changelog](CHANGELOG.md) · [Privacy](docs/PRIVACY.md)
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Version](https://img.shields.io/badge/version-2.6.1-green)
+![Version](https://img.shields.io/badge/version-2.6.2-green)
 ![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)
 
 <p align="center"><img src="assets/ui.png" alt="Fictional conversation: reply-first cards and speaker correction" width="440"></p>
@@ -17,7 +17,7 @@ Read a WeChat conversation on demand and get editable reply suggestions using yo
 - One-click capture and generation, with speaker identification before reply generation. Read-only capture and manual text import are available too.
 - Session context, older screenshots and user background. Only reliable overlaps are joined automatically; changed contacts and gaps need confirmation.
 - Speaker correction, original-text editing, group nicknames and undo. Uncertain recent identities block generation.
-- One prominent reply card, alternative directions, inline editing and explicit copy. Goals and boundaries are optional special requirements.
+- One prominent reply card, inline editing and explicit copy. Direction buttons generate a fresh reply for that direction, keeping the other cards; failed/cancelled rewrites restore originals, and completed rewrites can be reverted. Goals and boundaries are optional special requirements.
 - Early display of complete candidates on compatible streams while alternatives and evidence continue in the same request. Half a reply is never presented as finished.
 - UI provider settings, model-list retrieval and synthetic connection tests. Keys are isolated by endpoint in Windows Credential Manager.
 - Cleanup of a legacy debug screenshot and rotated logs, plus recognition-fingerprint reset without deleting chat or API settings.
@@ -48,6 +48,8 @@ python wx_helper.py
 The protocol is `/chat/completions` with image input for recognition. Native Messages and Responses endpoints are not interchangeable. Use the built-in test to check compatibility.
 
 A fresh capture normally needs image recognition followed by text generation. Exact unchanged frames can reuse accepted recognition; generation retries are text-only. Pooled connections and early complete-candidate display reduce waiting but cannot eliminate provider or network latency. Non-streaming JSON still works without early display.
+
+Clicking a direction makes one text-generation request and waits for a new reply, without another screenshot. Expanding the existing alternatives simply displays them without a model request.
 
 For official DeepSeek `deepseek-flash` / `deepseek-v4-pro`, v2.6.1 requests JSON output and explicitly disables thinking for screenshot recognition. Empty, truncated or malformed recognition output can recover once within the same 60-second stage budget; successful calls do not add requests. Custom endpoints retain their existing parameters, and reply-generation thinking preferences are preserved.
 

@@ -27,6 +27,8 @@ class BuddyApp(LegacyApp):
         self.preview_active = False
         self.first_reply_at = None
         self.generation_basis = None
+        self.direction_pending = None
+        self.direction_history = None
         self.recent_expanded = True
         self.role_controls = []
         self.correction_undo = None
@@ -185,6 +187,8 @@ class BuddyApp(LegacyApp):
             self.cancel_button.pack_forget()
 
     def invalidate(self):
+        self.direction_pending = None
+        self.direction_history = None
         self.preview_active = False
         self.editing_index = None
         self.inline_editor = None
@@ -230,14 +234,46 @@ class BuddyApp(LegacyApp):
             self.plan_changed()
 
     def choose_direction(self, index):
-        if (self.busy and not self.preview_active) or not 0 <= index < len(self.cards):
+        if self.busy or not 0 <= index < len(self.cards):
             return
         if not self.finish_edit():
             return
-        self.selected_card = index
+        if self.reply_basis is not None and self.reply_basis != self.current_reply_basis():
+            self.invalidate()
+            self.set_status("聊天上下文已变化，请重新生成。", AMBER)
+            return
+        self.start("direction", index, self.cards[index]["label"])
+
+    def reply_snapshot(self):
+        return {"cards": copy.deepcopy(self.cards), "result": copy.deepcopy(self.result),
+                "selected": self.selected_card, "expanded": self.expanded, "basis": self.reply_basis}
+
+    def restore_reply_snapshot(self, saved):
+        if saved["basis"] is not None and saved["basis"] != self.current_reply_basis():
+            self.invalidate()
+            return False
+        self.cards, self.result = copy.deepcopy(saved["cards"]), copy.deepcopy(saved["result"])
+        self.selected_card, self.expanded = saved["selected"], saved["expanded"]
+        self.reply_basis = saved["basis"]
+        self.preview_active = False
+        self.render_advice()
         self.render_cards()
-        if not self.busy:
-            self.set_status("已切换回复方向 · 核对后复制。", GREEN)
+        return True
+
+    def previous_direction(self):
+        if self.busy or not self.direction_history or not self.finish_edit():
+            return
+        saved, self.direction_history = self.direction_history, None
+        if self.restore_reply_snapshot(saved):
+            self.set_status("已恢复换写前的建议。", GREEN)
+
+    def merge_direction(self, result):
+        request = self.direction_pending
+        cards = copy.deepcopy(request["saved"]["cards"])
+        cards[request["index"]] = result["cards"][0]
+        self.selected_card = request["index"]
+        self.result = dict(result, cards=cards)
+        self.cards = cards
 
     def activate(self, conversation):
         self.capture_cache = None
@@ -438,12 +474,12 @@ class BuddyApp(LegacyApp):
         if len(self.cards) > 1:
             directions = tk.Frame(self.card_box, bg=BG)
             directions.pack(fill="x", pady=(0, 10))
-            self.label(directions, "回复方向", MUTED, SMALL).pack(anchor="w", pady=(0, 5))
+            self.label(directions, "按方向换写 · 点击生成新回复", MUTED, SMALL).pack(anchor="w", pady=(0, 5))
             for i, card in enumerate(self.cards):
                 b = self.button(directions, card["label"], lambda n=i: self.choose_direction(n),
                                 primary=i == self.selected_card, small=True)
                 b.pack(side="left", padx=(0, 6))
-                b.configure(state="disabled" if self.busy and not self.preview_active else "normal")
+                b.configure(state="disabled" if self.busy else "normal")
                 self.controls.append(b)
         order = [self.selected_card] + [i for i in range(len(self.cards)) if i != self.selected_card]
         for i in (order if self.expanded else order[:1]):
@@ -479,6 +515,10 @@ class BuddyApp(LegacyApp):
                 self.card_labels.append(body)
         if len(self.cards) > 1:
             b = self.button(self.card_box, "收起其他方案" if self.expanded else "查看另外 %d 种回复" % (len(self.cards)-1), self.toggle_cards, small=True)
+            b.pack(anchor="w", pady=(0, 8))
+            self.controls.append(b)
+        if self.direction_history and not self.busy:
+            b = self.button(self.card_box, "恢复换写前的建议", self.previous_direction, small=True)
             b.pack(anchor="w", pady=(0, 8))
             self.controls.append(b)
 
@@ -797,6 +837,9 @@ class BuddyApp(LegacyApp):
             if problem:
                 self.set_status(problem, AMBER)
                 return
+        if mode == "direction" and (index is None or not 0 <= index < len(self.cards)):
+            self.set_status("请先生成回复，再选择方向。", AMBER)
+            return
         self.epoch += 1
         job = self.epoch
         event = threading.Event()
@@ -805,19 +848,26 @@ class BuddyApp(LegacyApp):
         self.network_mode = mode
         self.started_at = time.monotonic()
         self.first_reply_at = None
-        self.generation_basis = self.current_reply_basis() if mode == "generate" else None
-        self.stage = "正在识别聊天" if is_read else "正在检查草稿" if mode == "check" else "正在生成回复"
+        self.generation_basis = self.current_reply_basis() if mode in ("generate", "direction") else None
+        self.stage = ("正在按「%s」换写" % instruction if mode == "direction" else
+                      "正在识别聊天" if is_read else "正在检查草稿" if mode == "check" else "正在生成回复")
         self.set_busy(True)
         payload = {"cfg": copy.deepcopy(self.cfg), "conversation": copy.deepcopy(self.active),
                    "style": self.cfg["personas"].get(self.persona.get(), "自然简短"),
                    "previous": [c["text"] for c in self.cards], "draft": instruction,
+                   "direction": instruction if mode == "direction" else None,
                    "cache": copy.deepcopy(self.capture_cache), "session_id": self.active.id if self.active else None,
                    "basis": self.current_reply_basis()}
-        self.read_restore = {"cards": copy.deepcopy(self.cards), "result": copy.deepcopy(self.result),
-                             "selected": self.selected_card, "expanded": self.expanded,
-                             "basis": self.reply_basis} if is_read else None
+        self.read_restore = self.reply_snapshot() if is_read else None
+        if mode == "direction":
+            if self.direction_history:
+                payload["previous"] += [c["text"] for c in self.direction_history["cards"]]
+            self.direction_pending = {"index": index, "label": instruction, "saved": self.reply_snapshot()}
+            self.selected_card = index
+            self.preview_active = False
+            self.render_cards()
         # Never display stale candidates during a fresh capture/generation.
-        if mode != "check":
+        if mode not in ("check", "direction"):
             self.invalidate()
         self.tick(job)
         threading.Thread(target=self.worker, args=(job, event, mode, payload), daemon=True).start()
@@ -856,7 +906,8 @@ class BuddyApp(LegacyApp):
                 prompt = C.CAPTURE_PROMPT
             else:
                 prompt = C.generation_prompt(payload["conversation"], payload["style"], payload["previous"],
-                                             payload["draft"] if mode == "check" else None)
+                                             payload["draft"] if mode == "check" else None,
+                                             direction=payload.get("direction"))
             if event.is_set():
                 return
             prepared_at = time.monotonic()
@@ -872,6 +923,11 @@ class BuddyApp(LegacyApp):
                     emit("preview_reset", payload["basis"])
                 else:
                     for result in collector.feed(part):
+                        if mode == "direction":
+                            try:
+                                result = C.direction_result(result, payload["direction"], payload["previous"])
+                            except ValueError:
+                                continue
                         last_preview = result
                         emit("partial", (result, payload["basis"]))
             text, error = self.core.call_model(cfg, self.key, image, prompt, cancel_event=event,
@@ -889,6 +945,8 @@ class BuddyApp(LegacyApp):
                 emit("checked", C.unpack_json(text))
             else:
                 result = C.parse_generation(text, payload["conversation"])
+                if mode == "direction":
+                    result = C.direction_result(result, payload["direction"], payload["previous"])
                 if last_preview and (result["cards"][:len(last_preview["cards"])] != last_preview["cards"] or
                                      result["question"] != last_preview["question"]):
                     raise ValueError("生成结果前后不一致，请重试；已读消息保留")
@@ -944,22 +1002,30 @@ class BuddyApp(LegacyApp):
         if self.closed or job != self.epoch:
             return
         if kind in ("partial", "preview_reset"):
-            if not self.busy or self.network_mode != "generate":
+            if not self.busy or self.network_mode not in ("generate", "direction"):
                 return
             basis = value[1] if kind == "partial" else value
             if basis != self.current_reply_basis():
                 return
             if kind == "preview_reset":
                 if self.preview_active:
-                    self.invalidate()
+                    if self.network_mode == "direction" and self.direction_pending:
+                        self.restore_reply_snapshot(self.direction_pending["saved"])
+                        self.selected_card = self.direction_pending["index"]
+                        self.render_cards()
+                    else:
+                        self.invalidate()
                     self.recent_expanded = True
                     self.refresh_context()
-                self.set_status("正在生成回复 · 等待完整候选。", GREEN)
+                self.set_status(self.stage + " · 等待完整候选。", GREEN)
                 return
             result = value[0]
             first = not self.preview_active
             self.preview_active = True
-            self.result, self.cards = result, result["cards"]
+            if self.network_mode == "direction" and self.direction_pending:
+                self.merge_direction(result)
+            else:
+                self.result, self.cards = result, result["cards"]
             self.reply_basis = basis
             self.recent_expanded = False
             self.render_advice()
@@ -980,7 +1046,13 @@ class BuddyApp(LegacyApp):
         self.set_busy(False)
         if kind == "error":
             self.generation_basis = None
-            if had_preview:
+            if self.network_mode == "direction" and self.direction_pending:
+                saved = self.direction_pending["saved"]
+                self.direction_pending = None
+                self.restore_reply_snapshot(saved)
+                if had_preview:
+                    value = "换写未完成，已恢复原建议；如已复制新内容，请先核对。" + value
+            elif had_preview:
                 self.invalidate()
                 self.refresh_context()
                 value = "生成未完成，已撤下本次候选；如已复制，请先核对。" + value
@@ -1016,15 +1088,22 @@ class BuddyApp(LegacyApp):
         elif kind == "generated":
             self.generation_basis = None
             self.preview_active = False
-            self.result = value
-            self.cards = value["cards"]
+            direction = self.network_mode == "direction" and self.direction_pending is not None
+            if direction:
+                self.merge_direction(value)
+                self.direction_history = self.direction_pending["saved"]
+                self.direction_pending = None
+            else:
+                self.result = value
+                self.cards = value["cards"]
             self.reply_basis = self.current_reply_basis()
             self.recent_expanded = False
             self.render_advice()
             self.render_cards()
             self.refresh_context()
             self.root.after_idle(lambda: self.canvas.yview_moveto(0) if not self.closed and job == self.epoch else None)
-            self.set_status("建议已生成 · 请核对后复制；不会自动发送。", GREEN)
+            self.set_status("已按所选方向生成新回复 · 其他方案保留，可恢复上一版。" if direction else
+                            "建议已生成 · 请核对后复制；不会自动发送。", GREEN)
         elif kind == "checked":
             lines = [C.clean(value.get("summary"), 500) or "检查完成"]
             issues = value.get("issues")
@@ -1038,11 +1117,16 @@ class BuddyApp(LegacyApp):
             self.set_status("检查完成，保留你的原稿，由你决定是否采用。", GREEN)
 
     def cancel(self):
+        direction_saved = self.direction_pending["saved"] if self.direction_pending else None
+        self.direction_pending = None
         self.generation_basis = None
-        if self.preview_active:
+        if self.preview_active and direction_saved is None:
             self.invalidate()
             self.recent_expanded = True
         super().cancel()
+        if direction_saved:
+            self.restore_reply_snapshot(direction_saved)
+            self.set_status("换写已取消，原建议已保留。", AMBER)
         self.refresh_context()
         self.read_restore = None
         if self.draft_dialog is not None and self.draft_dialog.winfo_exists():

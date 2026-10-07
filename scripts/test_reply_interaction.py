@@ -89,10 +89,11 @@ class InteractionTests(unittest.TestCase):
         self.change_editor("先给我一个范围吧。")
         a.render_cards()
         self.assertEqual(a.inline_editor.get("1.0", "end-1c"), "先给我一个范围吧。")
-        a.choose_direction(1)
+        with patch("buddy_ui.threading.Thread"):
+            a.choose_direction(1)
         self.assertEqual(a.cards[0]["text"], "先给我一个范围吧。")
         self.assertIsNone(a.editing_index)
-        a.choose_direction(0)
+        a.cancel()
         self.assertEqual(a.card_labels[0].cget("text"), "先给我一个范围吧。")
 
     def test_cached_read_restores_edited_reply_and_preserves_compact_view(self):

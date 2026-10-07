@@ -1,5 +1,17 @@
 # 版本记录 / Changelog
 
+## v2.6.2
+
+修复点击回复方向只调换已有卡片顺序、不产生新内容的问题。
+
+- 点击方向现在按该方向换写一条新回复，只更新所选卡片，保留其他方案；再次点击同一方向也会换写。
+- 使用现有已读上下文，单次换写只发起一次文字生成请求，不重新识别截图。流式接口返回第一条完整新回复后仍可提前复制。
+- 界面改为「按方向换写 · 点击生成新回复」，等待时显示所选方向并防止连点发起重复请求。
+- 原样复用已有内容、仅改变标点或空格的结果不会当作新回复。失败、取消和备用模型切换会恢复原方案，完成后可恢复换写前的建议。
+- 新增 15 项回归检查，主流程共 141 项通过，覆盖三种方向及重复点击、编辑保留、复制、文本请求、取消、重复输出和迟到事件。
+
+**Patch summary:** direction buttons now generate one fresh reply using the selected direction instead of merely sorting existing cards. Other cards remain available; complete streamed replies can be copied early. Replayed output is rejected, cancellation/failure restores the original cards, and a completed rewrite can be reverted without a request.
+
 ## v2.6.1
 
 修复读取截图时反复出现「模型返回格式不完整」的问题。

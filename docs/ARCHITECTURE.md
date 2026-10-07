@@ -1,4 +1,4 @@
-# Architecture — v2.6.1
+# Architecture — v2.6.2
 
 `BuddyApp` is the default Tk entry. It uses `wx_helper` for Win32 capture and bounded HTTP, and inherits shared window infrastructure from `wx_ui.ReplyApp`, overriding its legacy reply pipeline.
 
@@ -42,6 +42,8 @@ New captures normally require two sequential requests with separate 60-second st
 For exact official DeepSeek endpoints (root or `/v1`) and the supported Flash/Pro model IDs, main-workflow requests enable JSON output. Recognition explicitly disables thinking; generation keeps its configured preference. Empty final content, `length` finishes and malformed capture JSON can recover once with the same image/prompt and original deadline. Authentication, filtering, cancellation and ordinary provider errors do not trigger this recovery. Other endpoints and legacy requests receive no new provider-specific parameters.
 
 SSE content deltas, not reasoning, enter the collector. Complete candidate objects are published after the question field arrives. Copy is enabled; editing waits for completion. Fallback resets previews. Malformed, interrupted or inconsistent final results remove previews and prompt review of already copied text. JSON-only responses retain the full-result path.
+
+Direction rewrites use a separate `direction` mode with the same guarded text-generation transport. The selected label, previous cards and at most one prior card snapshot enter the prompt; it requests exactly one fresh candidate. A normalization check rejects old content and punctuation/whitespace-only changes before preview or final acceptance. UI events replace only the selected card, retaining other cards from the request snapshot. Busy clicks cannot create concurrent rewrites. Cancellation/failure restores the snapshot only when its conversation basis is still current; late events cannot overwrite newer state. One previous snapshot can be restored locally after a successful rewrite. These snapshots live only in session memory.
 
 Logs distinguish local preparation, API completion, parsing and first usable reply. Header time includes both network and server wait, not just connection time. The image cache holds one fingerprint/session ID, not image pixels. Capture and HTTP image data exist only as temporary worker memory.
 

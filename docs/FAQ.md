@@ -1,4 +1,4 @@
-# FAQ — v2.6.1
+# FAQ — v2.6.2
 
 ### Does it send messages or watch continuously?
 No. Each read is user-triggered; you copy and paste yourself. No client injection, database access or automatic scrolling.
@@ -20,6 +20,9 @@ A last self-message stops automatic generation to avoid answering as the other p
 
 ### Must I fill in a goal and boundary?
 No. 特殊要求 is optional. Blank fields generate from context without a form-filling step.
+
+### Clicking a direction only rearranges old replies.
+This was the behavior before v2.6.2. Direction buttons now make one text-only request for a fresh reply in the selected direction, replacing that card while preserving alternatives. The heading explicitly says clicking generates a new reply. Duplicate content, including punctuation-only changes, is rejected. Failure or cancellation restores originals; a completed rewrite has a restore button. To view existing cards without a request, expand the alternatives instead. Restart a running source installation to load the fix.
 
 ### Why can replies still be slow?
 Fresh captures require recognition followed by generation. Compatible streams show complete candidates early, but API latency remains. Stage logs distinguish waits; generation retry is text-only.

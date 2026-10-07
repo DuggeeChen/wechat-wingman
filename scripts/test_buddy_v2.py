@@ -295,24 +295,22 @@ class UITests(unittest.TestCase):
         self.app.plan_changed()
         self.assertEqual(self.app.cards, [])
 
-    def test_direction_switch_copies_selected_reply_without_network_or_plan_change(self):
+    def test_direction_switch_starts_targeted_generation_without_plan_change(self):
         self.fill()
         a = self.app
         a.cards = [{"text": "具体有几张？", "label": "问清范围"}, {"text": "这次帮不上，抱歉。", "label": "婉拒"}]
         a.render_cards()
-        with patch.object(core, "call_model") as call, patch.object(a.root, "clipboard_clear"), \
-             patch.object(a.root, "clipboard_append") as copy_text:
+        with patch("buddy_ui.threading.Thread") as thread:
             a.choose_direction(1)
+            self.assertTrue(a.busy)
             self.assertEqual(a.card_labels[0].cget("text"), "这次帮不上，抱歉。")
-            next(b for b in a.controls if b.cget("text") == "复制").invoke()
-            copy_text.assert_called_once_with("这次帮不上，抱歉。")
-            call.assert_not_called()
+            payload = thread.call_args.kwargs["args"][3]
+            self.assertEqual(payload["direction"], "婉拒")
+            self.assertEqual(payload["previous"], ["具体有几张？", "这次帮不上，抱歉。"])
         self.assertEqual((a.active.goal, a.active.boundary), ("", ""))
-        a.toggle_cards()
-        self.assertEqual([w.cget("text") for w in a.card_labels], ["这次帮不上，抱歉。", "具体有几张？"])
-        a.set_busy(True)
         a.choose_direction(0)
         self.assertEqual(a.selected_card, 1)
+        a.cancel()
 
     def test_collapsed_requirements_remain_applied_and_clear_invalidates(self):
         self.fill()
