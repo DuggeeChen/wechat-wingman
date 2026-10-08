@@ -51,6 +51,42 @@ bbox 为消息气泡在整张输入图片中的 0~1 归一化坐标。不要把�
 只显示列表而没有会话时 name 为空，messages 为空。绝不补全画面之外的历史。'''
 
 
+IDENTITY_REASONS = {
+    "missing_bbox": "模型没有返回气泡位置", "invalid_bbox": "气泡坐标格式或范围异常",
+    "uncertain": "模型未确认气泡所属一侧", "conflict": "发送者与气泡左右位置矛盾",
+    "geometry": "气泡坐标与所报左右位置矛盾", "group_sender": "群聊发送者昵称不清晰",
+    "manual": "你暂时保留为待确认", "unlabeled": "粘贴文字没有标注发送者",
+}
+
+
+def identity_reason_text(message):
+    if message.get("role") != "unknown":
+        return ""
+    if message.get("corrected"):
+        return IDENTITY_REASONS["manual"]
+    return IDENTITY_REASONS.get(message.get("identity_reason"), "发送者证据不足")
+
+
+def capture_identity(item, kind):
+    role, side, box = item.get("role", "unknown"), item.get("side"), item.get("bbox")
+    if box is None:
+        return "unknown", "missing_bbox"
+    valid = (isinstance(box, list) and len(box) == 4
+             and all(type(v) in (int, float) and 0 <= v <= 1 for v in box)
+             and box[0] < box[2] and box[1] < box[3])
+    if not valid:
+        return "unknown", "invalid_bbox"
+    if role not in ("self", "other") or side not in ("left", "right"):
+        return "unknown", "uncertain"
+    if {"left": "other", "right": "self"}[side] != role:
+        return "unknown", "conflict"
+    if (side == "left" and box[0] > .62) or (side == "right" and box[2] < .65):
+        return "unknown", "geometry"
+    if kind == "群聊" and role == "other" and not clean(item.get("sender"), 100):
+        return "unknown", "group_sender"
+    return role, ""
+
+
 def parse_capture(text):
     data = unpack_json(text)
     name, kind = clean(data.get("name"), 100), clean(data.get("kind"), 10)
@@ -67,23 +103,12 @@ def parse_capture(text):
     for item in raw:
         if not isinstance(item, dict) or not clean(item.get("text")):
             continue
-        role = item.get("role", "unknown")
+        role, reason = capture_identity(item, kind)
         side, box = item.get("side"), item.get("bbox")
-        valid_box = (isinstance(box, list) and len(box) == 4
-                     and all(type(v) in (int, float) and 0 <= v <= 1 for v in box)
-                     and box[0] < box[2] and box[1] < box[3])
-        # Spatial evidence is mandatory, but still model-observed, not ground truth.
-        if not valid_box or {"left": "other", "right": "self"}.get(side) != role:
-            role = "unknown"
-        elif (side == "left" and box[0] > 0.62) or (side == "right" and box[2] < 0.65):
-            # Reject clear geometric contradictions; don't infer from text centre.
-            role = "unknown"
         sender = clean(item.get("sender"), 100)
-        if kind == "群聊" and role == "other" and not sender:
-            role = "unknown"
         messages.append({"id": uid(), "role": role, "sender": sender,
                          "text": clean(item["text"]), "side": side, "bbox": box,
-                         "source": "截图识别", "corrected": False})
+                         "source": "截图识别", "corrected": False, "identity_reason": reason})
     if not messages:
         raise ValueError("没有读到有效消息")
     return {"name": name, "kind": kind, "messages": messages}
@@ -100,7 +125,8 @@ def pasted_messages(text):
         role = "self" if sender == "我" else "unknown" if sender in ("未知", "待确认") else "other"
         if body:
             out.append({"id": uid(), "role": role, "sender": sender if sender not in ("我", "对方", "未知", "待确认") else "",
-                        "text": body, "source": "手动粘贴", "corrected": False})
+                        "text": body, "source": "手动粘贴", "corrected": False,
+                        "identity_reason": "unlabeled" if role == "unknown" else ""})
     if len(out) > 500 or len(text) > 60000:
         raise ValueError("一次最多粘贴 500 条、6 万字；请分段补充")
     if not out:
@@ -174,6 +200,40 @@ class Conversation:
         self.explicit_target = False
         last = self.messages[-1] if self.messages else None
         self.target_id = last["id"] if last and last["role"] == "other" else None
+
+    def needs_identity_refresh(self, message_ids):
+        return any(m["id"] in message_ids and m["role"] == "unknown"
+                   and not m.get("corrected") and m.get("source") == "截图识别" for m in self.messages)
+
+    def refresh_identities(self, incoming, message_ids):
+        """For an identical accepted frame only: stable IDs, exact ordered text."""
+        by_id = {m["id"]: m for m in self.messages}
+        if (self.pending or len(incoming) != len(message_ids) or len(set(message_ids)) != len(message_ids)
+                or any(mid not in by_id for mid in message_ids)):
+            raise ValueError("身份重读与原消息无法对应，已保留原记录；请手动纠正")
+        pairs = [(by_id[mid], new) for mid, new in zip(message_ids, incoming)]
+        if any(not old.get("corrected") and old["text"].strip() != new["text"].strip() for old, new in pairs):
+            raise ValueError("身份重读的条数或原文发生变化，已保留原记录；请手动纠正")
+        for old, _ in pairs:
+            if old["role"] == "unknown" and not old.get("corrected"):
+                if sum(m["text"].strip() == old["text"].strip() for m, _ in pairs) > 1:
+                    raise ValueError("重复原文无法可靠对应发送者，已保留原记录；请手动纠正")
+        changed = 0
+        for old, new in pairs:
+            if old["role"] != "unknown" or old.get("corrected") or old.get("source") != "截图识别":
+                continue
+            role, reason = capture_identity(new, self.kind)
+            if role == "unknown":
+                old["identity_reason"] = new.get("identity_reason") or reason
+                continue
+            old.update(role=role, sender=new.get("sender", ""), side=new.get("side"),
+                       bbox=copy.deepcopy(new.get("bbox")), identity_reason="")
+            changed += 1
+        if changed:
+            self.revision += 1
+            if not self.explicit_target:
+                self.choose_default_target()
+        return changed
 
     def target(self):
         return next((m for m in self.messages if m["id"] == self.target_id), None)

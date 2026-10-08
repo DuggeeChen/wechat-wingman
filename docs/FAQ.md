@@ -1,4 +1,4 @@
-# FAQ — v2.6.4
+# FAQ — v2.6.5
 
 ### Does it send messages or watch continuously?
 No. Each read is user-triggered; you copy and paste yourself. No client injection, database access or automatic scrolling.
@@ -14,6 +14,9 @@ Use 前情 / 纠正 for background or pasted messages, or capture an older scree
 
 ### It swapped my words with someone else's.
 Click the speaker button to choose 我 / 对方 / 待确认; undo the last correction if needed. Checks use positions, not meaning, but can still miss clear-looking errors.
+
+### Why does a clear message still say sender unconfirmed?
+Text can be readable while the model omits coordinates, reports invalid positions or disagrees about the sending side. The UI now shows the actual validation reason in recent context, the identity menu and the selected row of the full-message list. Read again to retry unresolved screenshot identities on the same frame; confirmed/manual identities keep the cache. Refresh requires the same contact, exact frame, ordered text and message IDs. Ambiguous repeated text, changed message counts or changed text are rejected rather than guessed. Manual corrections and deliberate uncertainty survive. There is no automatic retry loop; remaining uncertainty still blocks generation. Quotes do not establish the outer sender.
 
 ### It says I've already replied.
 A last self-message stops automatic generation to avoid answering as the other person. Explicitly choose a target when you want to add a follow-up.

@@ -357,7 +357,8 @@ class BuddyApp(LegacyApp):
                                     if target else "你已回复，等待对方。需要补充时，点击具体消息。",
                                     fg=GREEN if target else MUTED)
         if c.guard() and any(m["role"] == "unknown" for m in c.messages[-6:]):
-            self.last_message.configure(text="发送者待确认 · 点消息左侧身份即可纠正", fg=AMBER)
+            uncertain = next(m for m in reversed(c.messages[-6:]) if m["role"] == "unknown")
+            self.last_message.configure(text="待确认：%s · 可重读或点身份纠正" % C.identity_reason_text(uncertain), fg=AMBER)
         if c.pending or self.pending_capture:
             self.pending_button.pack(anchor="w", pady=(8, 0))
         self.more_button.configure(text="再给一批" if self.cards else "生成回复")
@@ -390,6 +391,9 @@ class BuddyApp(LegacyApp):
         c = self.active
         menu = tk.Menu(self.root, tearoff=False)
         self.role_menu = menu
+        if m["role"] == "unknown":
+            menu.add_command(label=C.identity_reason_text(m), state="disabled")
+            menu.add_separator()
         for label, role in (("是我说的", "self"), ("是对方说的", "other"), ("暂时不确定", "unknown")):
             menu.add_command(label=label, command=lambda r=role, owner=c: self.correct_role(mid, r, owner))
         menu.add_separator()
@@ -683,6 +687,14 @@ class BuddyApp(LegacyApp):
         listing.pack(fill="both", expand=True, pady=10)
         for i, m in enumerate(c.messages):
             listing.insert("end", "%d  %s%s" % (i+1, self.display_message(m)[:100], " [已纠正]" if m.get("corrected") else ""))
+        explanation = self.label(records, "选择待确认的消息可查看原因", MUTED, SMALL, wraplength=560)
+        explanation.pack(fill="x", pady=(0, 6))
+        def show_identity_reason(_event):
+            indexes = listing.curselection()
+            if indexes:
+                reason = C.identity_reason_text(c.messages[indexes[0]])
+                explanation.configure(text=("待确认：" + reason) if reason else "发送者已确认")
+        listing.bind("<<ListboxSelect>>", show_identity_reason)
         row = tk.Frame(records, bg=BG)
         row.pack(fill="x", pady=8)
         def selected(action):
@@ -777,7 +789,10 @@ class BuddyApp(LegacyApp):
         result = c.ingest(capture["messages"], older=older)
         if cache_key is not None and result in ("merged", "same"):
             # Only the last accepted frame, scoped to this in-memory session.
-            self.capture_cache = {"key": cache_key, "session_id": c.id}
+            count = len(capture["messages"])
+            frame_messages = c.messages[:count] if older else c.messages[-count:]
+            self.capture_cache = {"key": cache_key, "session_id": c.id,
+                                  "message_ids": [m["id"] for m in frame_messages]}
         self.invalidate()
         self.refresh_context()
         self.set_busy(False)
@@ -915,6 +930,7 @@ class BuddyApp(LegacyApp):
         try:
             cfg = payload["cfg"]
             image = None
+            identity_ids = None
             if mode in ("read", "older", "read_generate"):
                 status, hwnd = self.core.find_wechat()
                 if status != "ok":
@@ -925,9 +941,14 @@ class BuddyApp(LegacyApp):
                 cache_key = self.capture_key(image, hwnd, cfg, mode == "older")
                 cache = payload.get("cache")
                 if cache and cache["session_id"] == payload.get("session_id") and cache["key"] == cache_key:
-                    outcome = "缓存命中"
-                    emit("reused", cache["session_id"])
-                    return
+                    cached_ids = cache.get("message_ids", [])
+                    conversation = payload.get("conversation")
+                    if conversation and conversation.needs_identity_refresh(cached_ids):
+                        identity_ids = cached_ids
+                    else:
+                        outcome = "缓存命中"
+                        emit("reused", cache["session_id"])
+                        return
                 image = self.core.to_jpeg_b64(self.core.crop_chat(image, cfg))
                 prompt = C.CAPTURE_PROMPT
             else:
@@ -968,7 +989,17 @@ class BuddyApp(LegacyApp):
             if error:
                 raise ValueError(error)
             if mode in ("read", "older", "read_generate"):
-                emit("capture", (C.parse_capture(text), mode == "older", cache_key))
+                capture = C.parse_capture(text)
+                reasons = {}
+                for message in capture["messages"]:
+                    reason = message.get("identity_reason")
+                    if reason:
+                        reasons[reason] = reasons.get(reason, 0) + 1
+                self.core.log("识别身份 待确认原因=%s" % json.dumps(reasons, sort_keys=True))
+                if identity_ids is not None:
+                    emit("identity_capture", (capture, cache_key, identity_ids))
+                else:
+                    emit("capture", (capture, mode == "older", cache_key))
             elif mode == "check":
                 emit("checked", C.unpack_json(text))
             else:
@@ -1095,6 +1126,24 @@ class BuddyApp(LegacyApp):
             self.read_restore = None
             outcome = self.accept_capture(*value)
             if automatic and outcome in ("merged", "same"):
+                self.continue_read(job)
+        elif kind == "identity_capture":
+            capture, key, ids = value
+            c, cache = self.active, self.capture_cache
+            try:
+                if not c or not cache or cache["key"] != key or cache["session_id"] != c.id:
+                    raise ValueError("身份重读的会话已变化，请重试")
+                if c.name != capture["name"] or c.kind != capture["kind"]:
+                    raise ValueError("身份重读的聊天对象不一致，已保留原记录；请重新读取")
+                changed = c.refresh_identities(capture["messages"], ids)
+            except ValueError as exc:
+                self.handle_event(job, "error", str(exc))
+                return
+            self.read_restore = None
+            self.invalidate()
+            self.refresh_context()
+            self.set_status("身份已重读 · 确认了 %d 条；仍待确认可查看原因或手动纠正。" % changed, GREEN if changed else AMBER)
+            if self.network_mode == "read_generate":
                 self.continue_read(job)
         elif kind == "reused":
             if not self.active or value != self.active.id:

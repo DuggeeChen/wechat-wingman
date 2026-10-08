@@ -7,12 +7,14 @@ Read a WeChat conversation on demand and get editable reply suggestions using yo
 [中文](README.zh-CN.md) · [Windows download](https://github.com/DuggeeChen/wechat-wingman/releases/latest) · [Changelog](CHANGELOG.md) · [Privacy](docs/PRIVACY.md)
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Version](https://img.shields.io/badge/version-2.6.4-green)
+![Version](https://img.shields.io/badge/version-2.6.5-green)
 ![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)
 
 <p align="center"><img src="assets/ui.png" alt="Fictional conversation: reply-first cards and speaker correction" width="440"></p>
 
 ## Features
+
+- Uncertain sender labels show their validation reason. Reading an identical frame retries unresolved screenshot identities; ordered exact text and stable message IDs protect history and manual edits. Confirmed frames still reuse the cache.
 
 - Capture skips hidden and cloaked WeChat windows. Minimized windows are reported correctly; blank frames are blocked before upload. If background rendering fails, a guarded foreground screenshot is attempted.
 

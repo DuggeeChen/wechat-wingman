@@ -1,5 +1,17 @@
 # 版本记录 / Changelog
 
+## v2.6.5
+
+修复同一画面上的「待确认」身份被缓存反复沿用的问题，并补充具体校验原因。
+
+- 缓存记录截图所对应的消息编号。再次读取相同画面时，仍有未手动纠正的截图身份待确认则重新识别；已确认或用户主动保留不确定的结果仍复用缓存。
+- 身份重读严格核对会话、画面、消息编号、条数及原文顺序，只补充待确认身份，保留原文、已确认身份和手动修改，不追加重复消息。重复原文或无法可靠对应时保留原记录并提示手动纠正。
+- 最近消息提示、身份菜单和全部消息列表显示具体原因：缺少气泡坐标、坐标无效、模型未确认左右位置、角色与位置矛盾或群昵称不清晰。日志只记录原因类别计数。
+- 原有空间证据要求与未知身份阻止生成的规则保留，不根据文字中的「我」或引用内容猜发送者。
+- 新增 22 项身份与重读回归；含原有检查共 199 项。一次经授权的识别复测没有重现不确定身份，不能据此断定原失败原因或保证所有聊天的准确率；诊断代码不保存接口原文。
+
+**Patch summary:** unresolved screenshot identities can be reread even when pixels are unchanged. Strict stable-ID/text mapping protects edits and prevents duplicate history. Specific uncertainty reasons replace a generic label while existing spatial checks remain enforced.
+
 ## v2.6.4
 
 修复反复提示「没有识别到聊天对象」的一种已复现原因：窗口选择误选不可见的大尺寸微信窗口，PrintWindow 返回成功但图片全黑。

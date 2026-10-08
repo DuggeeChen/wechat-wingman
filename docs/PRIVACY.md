@@ -1,4 +1,4 @@
-# Privacy — v2.6.4
+# Privacy — v2.6.5
 
 Recognition, generation and draft checks send requested data to your configured model service. There is no telemetry, continuous capture or automatic sending. This is not an offline-only app.
 
@@ -25,7 +25,7 @@ Fallbacks retry the same payload at the same endpoint, including images for reco
 | API keys | New setup/settings use Windows Credential Manager. Legacy source config can use env/private `.env`. Managed connections do not silently reuse another endpoint's key. |
 | Window geometry | Private `ui_state.json`. |
 | Sessions, background, corrections, replies | RAM for this run; grow with use and are released on current-chat clearing or exit. |
-| Recognition cache | One exact frame fingerprint and session ID in RAM, not screenshot pixels. |
+| Recognition cache | One exact frame fingerprint, session ID and corresponding message IDs in RAM, not screenshot pixels. |
 | Capture/request images | Temporary worker memory; current main workflow does not save screenshots. |
 | Logs | Approximately 1 MB rotation into one `.1` file. Lifecycle, safe error types/statuses, model names and stage/request timings; no main-workflow message text, reply bodies, keys or contact names. |
 | Legacy debug image | `debug_last.png` may remain from the old debug path; cleanup removes it. Main workflow does not save captures via `save_debug`. |
@@ -48,3 +48,5 @@ Git excludes personal config, env files, screenshots, profiles, logs and build o
 The application does not encrypt local profiles or control providers' retention policies.
 
 The main capture workflow skips hidden/cloaked windows and blocks detected blank frames before upload. If background rendering fails, it may bring WeChat to the foreground and capture that window rectangle after checking screen bounds and obstruction, then recheck foreground ownership and position. Keep unrelated overlays away from the chat; these checks are not a redaction guarantee. Normal background capture does not move focus.
+
+Explicitly rereading an unchanged frame with unresolved screenshot identities can submit that screenshot again. There is no automatic identity retry loop. Diagnostic reasons remain local; generation context does not include coordinates or reason codes. Logs contain bounded reason counts, without per-message text or names.
