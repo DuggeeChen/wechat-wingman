@@ -7,12 +7,14 @@
 [English](README.md) · [Windows 便携版](https://github.com/DuggeeChen/wechat-wingman/releases/latest) · [版本记录](CHANGELOG.md) · [隐私说明](docs/PRIVACY.md)
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Version](https://img.shields.io/badge/version-2.6.3-green)
+![Version](https://img.shields.io/badge/version-2.6.4-green)
 ![CI](https://github.com/DuggeeChen/wechat-wingman/actions/workflows/ci.yml/badge.svg)
 
 <p align="center"><img src="assets/ui.png" alt="虚构对话演示：回复优先、卡片编辑、身份纠正" width="440"></p>
 
 ## 当前功能
+
+- **截图可靠性**：排除隐藏微信窗口，正确识别最小化状态；黑屏或空白截图先拦截。后台抓图失效时尝试将微信切到前台，仅截取该窗口，并检查遮挡与位置变化。
 
 - **一键读取并生成**：先识别截图中的双方消息，再结合本次已读上下文生成回复。也支持只读取和手动导入文字。
 - **补齐前因后果**：继续读取、补读更早记录或填写前情。可靠重叠才自动连接片段；缺少衔接或聊天对象变化时由你确认。

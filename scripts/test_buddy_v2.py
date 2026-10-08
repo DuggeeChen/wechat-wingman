@@ -242,7 +242,7 @@ class UITests(unittest.TestCase):
         self.app.accept_capture(C.parse_capture(capture()))
 
     def test_read_does_not_generate(self):
-        with patch.object(core, "find_wechat", return_value=("ok", 1)), patch.object(core, "grab", return_value=core.Image.new("RGB", (640, 480))), \
+        with patch.object(core, "find_wechat", return_value=("ok", 1)), patch.object(core, "capture_wechat", return_value=core.Image.new("RGB", (640, 480))), \
              patch.object(core, "crop_chat", return_value=object()), patch.object(core, "to_jpeg_b64", return_value="image"), \
              patch.object(core, "call_model", return_value=(capture(), None)) as call:
             self.app.worker(0, threading.Event(), "read", {"cfg": self.app.cfg})

@@ -1,5 +1,17 @@
 # 版本记录 / Changelog
 
+## v2.6.4
+
+修复反复提示「没有识别到聊天对象」的一种已复现原因：窗口选择误选不可见的大尺寸微信窗口，PrintWindow 返回成功但图片全黑。
+
+- 窗口选择排除不可见及被系统隐藏的窗口，正确识别已最小化的微信；有多个可用微信窗口时优先当前前台窗口。
+- 上传前检查黑屏、空白及纯色截图。正常后台截图不切前台、不增加模型请求。
+- 后台抓图失效时将微信切到前台，等待短暂绘制后只截取该窗口；检查前台归属、屏幕边界、遮挡和位置变化。仍无效则停止，不发送黑图。
+- 截图故障、聊天类型未确认与确实没打开会话分别提示；识别提示词明确顶栏与裁剪留白的含义。
+- 新增 19 项隐藏窗口、黑图回退、遮挡、变化及无效截图不调用模型的检查。原有 158 项回归通过；本机验证恢复微信后能捕获清晰标题及消息，不上传真实聊天进行验证。
+
+**Patch summary:** ignore hidden/cloaked windows, detect invalid captures before upload, and use a guarded foreground fallback only when background rendering fails. Correct minimized-window detection prevents hidden auxiliary windows from being sent to the model.
+
 ## v2.6.3
 
 修正 v2.6.2 将方向切换与换写绑定的交互，并加强语气风格和方向差异。

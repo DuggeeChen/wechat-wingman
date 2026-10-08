@@ -42,7 +42,7 @@ except Exception:
 
 try:
     import requests
-    from PIL import Image
+    from PIL import Image, ImageGrab
 except ImportError:
     ctypes.windll.user32.MessageBoxW(
         None, "缺少依赖，请运行：python -m pip install pillow requests",
@@ -115,6 +115,21 @@ u32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
 u32.ReleaseDC.restype = ctypes.c_int
 u32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
 u32.PrintWindow.restype = wt.BOOL
+u32.GetForegroundWindow.argtypes = []
+u32.GetForegroundWindow.restype = wt.HWND
+u32.SetForegroundWindow.argtypes = [wt.HWND]
+u32.SetForegroundWindow.restype = wt.BOOL
+u32.WindowFromPoint.argtypes = [wt.POINT]
+u32.WindowFromPoint.restype = wt.HWND
+u32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+u32.GetAncestor.restype = wt.HWND
+u32.IsWindowVisible.argtypes = [wt.HWND]
+u32.IsWindowVisible.restype = wt.BOOL
+u32.IsIconic.argtypes = [wt.HWND]
+u32.IsIconic.restype = wt.BOOL
+_dwm = ctypes.WinDLL("dwmapi")
+_dwm.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+_dwm.DwmGetWindowAttribute.restype = ctypes.c_long
 g32.CreateCompatibleDC.argtypes = [wt.HDC]
 g32.CreateCompatibleDC.restype = wt.HDC
 g32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
@@ -322,6 +337,14 @@ class BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wt.DWORD * 3)]
 
 
+def _window_can_capture(hwnd):
+    if not u32.IsWindowVisible(hwnd):
+        return False
+    cloaked = wt.DWORD()
+    status = _dwm.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+    return status != 0 or not cloaked.value
+
+
 def find_wechat():
     """返回 (状态, hwnd)。状态: 'ok' 正常 / 'minimized' 已最小化 / 'none' 没开。"""
     hits, mini = [], [False]
@@ -337,6 +360,8 @@ def find_wechat():
         u32.GetWindowTextW(hwnd, buf, n + 2)
         if "微信" not in buf.value:
             return True
+        if not _window_can_capture(hwnd):
+            return True
         if u32.IsIconic(hwnd):
             mini[0] = True
             return True
@@ -348,6 +373,9 @@ def find_wechat():
 
     u32.EnumWindows(Proc(cb), 0)
     if hits:
+        foreground = u32.GetForegroundWindow()
+        if any(hwnd == foreground for hwnd, _ in hits):
+            return "ok", foreground
         hits.sort(key=lambda x: -x[1])
         return "ok", hits[0][0]
     return ("minimized" if mini[0] else "none"), None
@@ -395,6 +423,69 @@ def grab(hwnd):
             g32.DeleteDC(mfc)
         if hdc:
             u32.ReleaseDC(hwnd, hdc)
+
+
+def capture_is_blank(image):
+    """Reject failed render surfaces before cropping or uploading; no OCR."""
+    if image is None:
+        return True
+    sample = image.convert("L").resize((128, 128))
+    lo, hi = sample.getextrema()
+    counts = sample.histogram()
+    total = sum(counts)
+    return hi - lo <= 8 or sum(counts[:9]) / total >= .985 or sum(counts[247:]) / total >= .995
+
+
+def _visible_capture_rect(hwnd):
+    """Only capture the same foreground window, fully onscreen and uncovered."""
+    if not _window_can_capture(hwnd) or u32.GetForegroundWindow() != hwnd or u32.IsIconic(hwnd):
+        raise ValueError("微信截图黑屏，无法切到前台；请点开微信聊天窗口后重试")
+    rect = wt.RECT()
+    if not u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ValueError("微信窗口已变化，请重新打开聊天后重试")
+    box = (rect.left, rect.top, rect.right, rect.bottom)
+    vx, vy = u32.GetSystemMetrics(76), u32.GetSystemMetrics(77)
+    vw, vh = u32.GetSystemMetrics(78), u32.GetSystemMetrics(79)
+    if rect.right-rect.left < 100 or rect.bottom-rect.top < 100 or not (
+            vx <= rect.left < rect.right <= vx+vw and vy <= rect.top < rect.bottom <= vy+vh):
+        raise ValueError("请把微信窗口完整移到屏幕内后重试")
+    # Ignore only the thin resize border/shadow, never an obstructing application.
+    for x in range(rect.left+12, rect.right-12, 48):
+        for y in range(rect.top+12, rect.bottom-12, 48):
+            hit = u32.WindowFromPoint(wt.POINT(x, y))
+            if u32.GetAncestor(hit, 2) != hwnd:  # GA_ROOT
+                raise ValueError("微信窗口被其他窗口遮挡，请移开遮挡后重试")
+    return box
+
+
+def capture_wechat(hwnd, cancel_event=None):
+    """Normal background capture first; foreground fallback for Qt black frames."""
+    if not _window_can_capture(hwnd) or u32.IsIconic(hwnd):
+        raise ValueError("微信窗口不可见或已最小化，请打开具体聊天后重试")
+    image = grab(hwnd)
+    if not capture_is_blank(image):
+        return image
+    log("截图模式=后台 无效画面=1 正在尝试前台截图")
+    if cancel_event is not None and cancel_event.is_set():
+        raise ValueError("已取消")
+    u32.SetForegroundWindow(hwnd)
+    # Let the compositor paint without adding latency to successful captures.
+    if cancel_event is not None:
+        if cancel_event.wait(.25):
+            raise ValueError("已取消")
+    else:
+        time.sleep(.25)
+    box = _visible_capture_rect(hwnd)
+    try:
+        image = ImageGrab.grab(bbox=box, all_screens=True)
+    except OSError:
+        raise ValueError("微信屏幕截图失败，请恢复窗口后重试") from None
+    if _visible_capture_rect(hwnd) != box:
+        raise ValueError("截图时微信窗口发生变化，请重试")
+    if capture_is_blank(image):
+        raise ValueError("微信截图仍是黑屏或空白，请恢复聊天窗口后重试；本次未发送截图")
+    log("截图模式=前台 有效画面=1")
+    return image
 
 
 def _find_sidebar_divider(img, max_x):

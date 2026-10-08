@@ -1,4 +1,4 @@
-# FAQ — v2.6.3
+# FAQ — v2.6.4
 
 ### Does it send messages or watch continuously?
 No. Each read is user-triggered; you copy and paste yourself. No client injection, database access or automatic scrolling.
@@ -29,6 +29,9 @@ The selected name and definition now enter explicit system writing instructions,
 
 ### Why can replies still be slow?
 Fresh captures require recognition followed by generation. Compatible streams show complete candidates early, but API latency remains. Stage logs distinguish waits; generation retry is text-only.
+
+### It repeatedly says no chat contact was recognized.
+In a reproduced case, the old selector chose a hidden, large WeChat window instead of the minimized visible one. PrintWindow succeeded but returned black pixels. v2.6.4 skips hidden/cloaked windows and reports minimized state correctly. Restore WeChat and open the conversation. Blank captures are rejected before upload; failed background rendering attempts a foreground screenshot of the same window, checking screen bounds, obstruction and position changes. This fallback can bring WeChat to the foreground. A genuine missing title or unreadable chat type remains a separate recognition error. Restart after upgrading.
 
 ### It repeatedly reports incomplete model output.
 An HTTP 200 response may still contain no final answer or output cut off at its token limit. v2.6.1 preserves finish reasons and distinguishes these errors. Supported official DeepSeek models use JSON output, and screenshot recognition disables thinking explicitly. Recognition can recover once using the same screenshot within the original 60-second budget. Normal success adds no requests; custom endpoints keep their existing parameters. Complete JSON with a BOM, code fence or short explanatory wrapper is accepted, but missing text, duplicate fields and ambiguous objects are not repaired. Restart an existing source installation after upgrading to load the fix.

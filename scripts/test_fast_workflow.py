@@ -31,7 +31,7 @@ class WorkflowTests(unittest.TestCase):
         self.app = BuddyApp(core, copy.deepcopy(core.DEFAULT_CFG), "dummy", testing=True)
         self.frame = core.Image.new("RGB", (680, 480), "white")
         self.patches = [patch.object(core, "log"), patch.object(core, "find_wechat", return_value=("ok", 123)),
-                        patch.object(core, "grab", side_effect=lambda _hwnd: self.frame.copy())]
+                        patch.object(core, "capture_wechat", side_effect=lambda _hwnd, **_: self.frame.copy())]
         for p in self.patches:
             p.start()
 

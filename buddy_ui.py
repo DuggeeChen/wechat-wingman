@@ -919,7 +919,7 @@ class BuddyApp(LegacyApp):
                 status, hwnd = self.core.find_wechat()
                 if status != "ok":
                     raise ValueError("请打开具体微信聊天，并恢复最小化的窗口")
-                image = self.core.grab(hwnd)
+                image = self.core.capture_wechat(hwnd, cancel_event=event)
                 if image is None:
                     raise ValueError("截图失败，请恢复微信窗口后重试")
                 cache_key = self.capture_key(image, hwnd, cfg, mode == "older")

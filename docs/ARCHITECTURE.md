@@ -1,4 +1,4 @@
-# Architecture — v2.6.3
+# Architecture — v2.6.4
 
 `BuddyApp` is the default Tk entry. It uses `wx_helper` for Win32 capture and bounded HTTP, and inherits shared window infrastructure from `wx_ui.ReplyApp`, overriding its legacy reply pipeline.
 
@@ -52,3 +52,5 @@ Logs distinguish local preparation, API completion, parsing and first usable rep
 Transport preserves SSE finish reasons. Diagnostics record safe finish categories, content lengths and error categories, never response text or reasoning. Complete capture/check objects may have harmless wrappers; the parser never selects a nested object from a broken outer object, repairs truncation or accepts duplicate fields.
 
 Tests cover identities, contact isolation, gaps, stale/cancelled events, connection reuse, synthetic SSE, settings, inline edits and cleanup boundaries without real model calls.
+
+Capture selection filters visibility and DWM cloaking before size checks. Invalid raw render surfaces cannot enter cropping, cache acceptance or vision requests. Only failed background captures use a guarded foreground screen capture, with checks before and after it; normal success adds no foreground switch or model request.

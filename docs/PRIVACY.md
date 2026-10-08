@@ -1,4 +1,4 @@
-# Privacy — v2.6.3
+# Privacy — v2.6.4
 
 Recognition, generation and draft checks send requested data to your configured model service. There is no telemetry, continuous capture or automatic sending. This is not an offline-only app.
 
@@ -46,3 +46,5 @@ Cleanup deletes only `debug_last.png`, `wx_helper.log` and `wx_helper.log.1` in 
 Git excludes personal config, env files, screenshots, profiles, logs and build output. Releases contain code/resources and a fictional configuration template, never personal runtime files. CI scans tracked files for private artifacts; packaging checks filenames too.
 
 The application does not encrypt local profiles or control providers' retention policies.
+
+The main capture workflow skips hidden/cloaked windows and blocks detected blank frames before upload. If background rendering fails, it may bring WeChat to the foreground and capture that window rectangle after checking screen bounds and obstruction, then recheck foreground ownership and position. Keep unrelated overlays away from the chat; these checks are not a redaction guarantee. Normal background capture does not move focus.
